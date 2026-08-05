@@ -1,0 +1,19 @@
+numpy>=1.24
+scipy>=1.10     # scipy.linalg logm/expm for the continuous-time transition generator
+pandas>=2.0
+matplotlib>=3.7
+ipython>=8.0     # notebook setup cell imports IPython.display; headless run needs it present
+adjustText>=0.8  # optional: nicer figure label placement (figures only)
+pyomo>=6.6
+# Only needed to re-derive data/cascade_beta.csv from the WIOD 2016 .xlsb tables
+# (build_cascade_matrix.py). The main pipeline does not require it.
+pyxlsb>=1.0
+# Choropleth loss map and the EIA-style chokepoint map use Cartopy's Natural
+# Earth polygons. The flow Sankey is pure matplotlib. All figures export vector
+# PDF directly (no browser engine / kaleido needed).
+cartopy>=0.21
+# MIP solver. The paper's numbers are produced with Gurobi; HiGHS is the
+# license-free fallback (run_hpc.py auto-selects Gurobi if licensed, else HiGHS).
+gurobipy>=11.0  # commercial; needs a license (DTU HPC: module load gurobi sets GRB_LICENSE_FILE)
+highspy>=1.5    # python wrapper, no system install needed, no license
+# glpk-utils    # via apt-get install glpk-utils
