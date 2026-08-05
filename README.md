@@ -108,6 +108,31 @@ python code/experiments.py robustness                             # 200-draw joi
 Gurobi produces the paper's numbers. HiGHS reproduces the same model with a
 different solver and is selected automatically when Gurobi is not licensed.
 
+### Reproducibility details
+
+- **Scenario tree.** The headline is the four-stage, 27-path (3^3) extensive
+  form, generated in code from the continuous-time transition generators in
+  `model.py` (no external scenario file). `COALITION_TARGET_COUNT=30` selects the
+  full tree.
+- **Experiment counts.** `pipeline.py` covers the headline reconciliation and the
+  64 instrument-subset policy attribution; `experiments.py coalition` and
+  `core-certify` cover the 64 regional-coalition solves; `isoelastic`/`isogame`
+  cover the constant-elasticity re-optimization; `robustness` covers the 200-draw
+  Monte-Carlo joint-uncertainty sweep and the sensitivity checks.
+- **Software.** Python >= 3.10, Pyomo >= 6.6, Gurobi 13.0.0 (`gurobipy`), or
+  HiGHS (`highspy`) as the open-source fallback. Exact package versions are
+  pinned in `code/requirements.txt`.
+- **Seeds.** The scenario and Monte-Carlo draws use a fixed seed of 42, and the
+  solver seed is fixed, so runs are deterministic.
+- **Hardware and run times.** The paper's numbers were produced on a single
+  compute node. The three main regimes each solve in roughly one to three minutes
+  at a 0.1% gap; the full `pipeline.py` run takes about an hour, and the 64-solve
+  coalition game and the 200-draw sweep each take a few hours on one node.
+- **Script-to-output mapping.** Each command in the manifest above writes named
+  files into `outputs/` (for example `core_certify_linear.json`,
+  `table_coalition_cost_sharing.csv`, `table_isoelastic.json`); the docstring at
+  the top of each `experiments.py` subcommand names its outputs.
+
 ## Data
 
 The main pipeline needs only `data/cascade_beta.csv`, which is provided. The WIOD
