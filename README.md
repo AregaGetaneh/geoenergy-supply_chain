@@ -87,6 +87,27 @@ Most subcommands read environment variables to select the scenario count, gap,
 or price curve, run `python code/experiments.py <name> --help` or see the
 docstrings in `experiments.py`.
 
+### Reproducing the full manuscript
+
+The paper's numbers use the full 27-path (3^3) scenario tree solved with Gurobi
+at a fixed seed of 42. Running the pipeline and then each experiment command
+regenerates every table and figure in the manuscript:
+
+```bash
+python code/pipeline.py                                           # headline tables, policy attribution over the 64 instrument subsets, all figures
+python code/experiments.py reconcile                              # three-regime reconciliation and the solve-size table
+COALITION_TARGET_COUNT=30 python code/experiments.py coalition    # 64-coalition cooperative game, realized incidence
+COALITION_TARGET_COUNT=30 python code/experiments.py core-certify # certified core stability at the 1e-4 gap
+python code/experiments.py ampspec                                # amplification specifications
+python code/experiments.py isoelastic                             # constant-elasticity benchmark
+COALITION_TARGET_COUNT=30 python code/experiments.py isogame      # constant-elasticity cooperative game
+python code/experiments.py displacement                           # market-displacement sensitivity
+python code/experiments.py robustness                             # 200-draw joint-uncertainty sweep and the sensitivity checks
+```
+
+Gurobi produces the paper's numbers. HiGHS reproduces the same model with a
+different solver and is selected automatically when Gurobi is not licensed.
+
 ## Data
 
 The main pipeline needs only `data/cascade_beta.csv`, which is provided. The WIOD
