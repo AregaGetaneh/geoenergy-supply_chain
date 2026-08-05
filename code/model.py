@@ -2832,11 +2832,19 @@ def solve_mip(policy_subset: Tuple[str, ...] = ALL_POLICIES,
 
 
 def clear_cache(cache_dir: str = DEFAULT_CACHE_DIR) -> int:
-    """Delete all cached MIP results. Returns count deleted."""
+    """Delete all cached MIP results. Returns count deleted.
+
+    Unlink failures are tolerated, so a file transiently locked by a sync client
+    (OneDrive) or another process does not abort the run.
+    """
     p = Path(cache_dir)
     if not p.exists():
         return 0
-    files = list(p.glob("*.json"))
-    for f in files:
-        f.unlink()
-    return len(files)
+    deleted = 0
+    for f in list(p.glob("*.json")):
+        try:
+            f.unlink()
+            deleted += 1
+        except OSError:
+            pass
+    return deleted

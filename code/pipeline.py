@@ -12,6 +12,13 @@ A full run takes roughly an hour. Figures are written as vector PDFs (headless).
 import os
 import sys
 
+# Force UTF-8 stdout so table prints with symbols (checkmarks, x, dashes) do not
+# crash on a Windows cp1252 console. No effect on Linux, which is UTF-8 already.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 os.chdir(_ROOT)
