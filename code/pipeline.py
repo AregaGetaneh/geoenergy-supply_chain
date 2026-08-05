@@ -159,7 +159,10 @@ for p in POLICIES:
 # ---------------------------------------------------------------------------
 # Geospatial overview: EIA-style world oil transit chokepoint map
 # (Plotly basemap, gold throughput bubbles, dark-red sea-lane arrows, no Cartopy).
-_p = generate_chokepoint_map('outputs')
+try:
+    _p = generate_chokepoint_map('outputs')
+except ImportError as _e:
+    print(f"[skip] chokepoint map needs cartopy ({_e}); other outputs unaffected.")
 print('Saved', _p)
 display(Image(_p.replace('.pdf', '.png')))
 
@@ -717,7 +720,10 @@ _t = df_country_loss.iloc[0]
 print(f"National losses exported for {len(df_country_loss)} importers; "
       f"largest: {_t['Country']} ${_t['Inaction ($B)']:.0f}B inaction")
 display(df_country_loss.head(12))
-_p = make_country_loss_map(df_country_loss, 'outputs')
+try:
+    _p = make_country_loss_map(df_country_loss, 'outputs')
+except ImportError as _e:
+    print(f"[skip] country-loss map needs cartopy ({_e}); other outputs unaffected.")
 print('Saved', _p)
 display(Image(_p.replace('.pdf', '.png')))
 

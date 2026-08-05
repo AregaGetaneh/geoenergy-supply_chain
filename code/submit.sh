@@ -30,7 +30,9 @@
 set -euo pipefail
 
 EXPERIMENT="${EXPERIMENT:-reconcile}"
-PROJECT_DIR="$HOME/projects/geoenergy-supply_chain-mip-v4"
+# Project directory: the directory bsub was submitted from, so a fresh clone in
+# any location works. Override by exporting PROJECT_DIR.
+PROJECT_DIR="${PROJECT_DIR:-${LS_SUBCWD:-$(pwd)}}"
 PYTHON_MODULE="python3/3.10.13"     # match `module avail python3` on the node
 
 cd "$PROJECT_DIR"
