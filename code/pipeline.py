@@ -161,10 +161,10 @@ for p in POLICIES:
 # (Plotly basemap, gold throughput bubbles, dark-red sea-lane arrows, no Cartopy).
 try:
     _p = generate_chokepoint_map('outputs')
+    print('Saved', _p)
+    display(Image(_p.replace('.pdf', '.png')))
 except ImportError as _e:
     print(f"[skip] chokepoint map needs cartopy ({_e}); other outputs unaffected.")
-print('Saved', _p)
-display(Image(_p.replace('.pdf', '.png')))
 
 # ---------------------------------------------------------------------------
 # cell 6
@@ -722,10 +722,10 @@ print(f"National losses exported for {len(df_country_loss)} importers; "
 display(df_country_loss.head(12))
 try:
     _p = make_country_loss_map(df_country_loss, 'outputs')
+    print('Saved', _p)
+    display(Image(_p.replace('.pdf', '.png')))
 except ImportError as _e:
     print(f"[skip] country-loss map needs cartopy ({_e}); other outputs unaffected.")
-print('Saved', _p)
-display(Image(_p.replace('.pdf', '.png')))
 
 # ---------------------------------------------------------------------------
 # cell 39
