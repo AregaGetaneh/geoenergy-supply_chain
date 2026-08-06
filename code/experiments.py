@@ -2,8 +2,7 @@
 
 Single argparse CLI over the paper's re-run and robustness experiments. Each
 subcommand reproduces one experiment and writes its outputs under outputs/.
-Environment-variable configuration is preserved so the HPC job scripts keep
-working; the equivalent knobs are also exposed as optional flags.
+Configuration is read from environment variables so the HPC job scripts keep working.
 
 Run from the repository root, e.g.:
   COALITION_TARGET_COUNT=30 python code/experiments.py reconcile
@@ -44,9 +43,7 @@ import model as mc  # noqa: E402
 import analysis as an  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
 # Shared helpers
-# ---------------------------------------------------------------------------
 def _active_bundle(m):
     """Sorted "+"-joined list of policies switched on in any stage/scenario."""
     on = [p for p in m.P
@@ -59,17 +56,14 @@ def _obj_billion(m):
     return pyo.value(list(m.component_data_objects(pyo.Objective))[0]) / 1e3
 
 
-# ---------------------------------------------------------------------------
 # reconcile: three-regime reconciliation + computational disclosure
-# ---------------------------------------------------------------------------
 def cmd_reconcile(args):
-    """Solve the 100-day full-closure Hormuz benchmark in three regimes and report,
-    for each, the active policy bundle and the welfare decomposition, the real resource
-    loss excluding the price deadweight (W'), the price deadweight, the terms-of-trade
-    transfer, and importer expenditure. This distinguishes the resource saving from
-    intervention (no intervention -> planner) from the importer-welfare coordination
-    gain (atomistic -> planner). Also reports deterministic-equivalent dimensions, the
-    achieved incumbent, best bound, final gap, and solve time."""
+    """Solve the 100-day full-closure Hormuz benchmark in three regimes, reporting per
+    regime the active bundle and welfare decomposition: real resource loss net of price
+    deadweight (W'), deadweight, terms-of-trade transfer, importer expenditure, plus
+    problem dimensions, incumbent, bound, gap, and solve time. Separates the resource
+    saving (no intervention -> planner) from the coordination gain (atomistic -> planner).
+    Writes outputs/table_reconcile.json."""
     TC = int(os.environ.get("COALITION_TARGET_COUNT", "30"))
     TL = int(os.environ.get("RECON_TIME_LIMIT", "1200"))
     _SOLVER = mc._detect_solver(None)
@@ -139,28 +133,26 @@ def cmd_reconcile(args):
     print("Wrote outputs/table_reconcile.json", flush=True)
 
 
-# ---------------------------------------------------------------------------
 # coalition: coordination re-solve (physical clearing + normalized game)
-# ---------------------------------------------------------------------------
 def cmd_coalition(args):
-    """Regenerate the decentralization/coordination results. The reported deadweight
-    and transfer use the physical price residual, netting out every realized demand
-    reduction (not only the coordinating set's); the cooperative game is normalized with
-    v_+(S)=max{0,v(S)} for every coalition. Writes the coordination analysis, the
-    coalition cost-sharing and game summary, and the budget-balanced transfer table."""
+    """Regenerate the decentralization/coordination results. Deadweight and transfer use
+    the physical price residual netting out every realized demand reduction; the game is
+    normalized with v_+(S)=max{0,v(S)}. Writes outputs/table_coordination_analysis.csv,
+    table_coalition_cost_sharing.csv, coalition_game_summary.json, and
+    table_coalition_transfers.csv."""
     import pandas as pd  # noqa: F401  (kept for parity with the original script)
 
     TC = int(os.environ.get("COALITION_TARGET_COUNT", "30"))
     print(f"[config] target_count={TC}", flush=True)
     os.makedirs("outputs", exist_ok=True)
 
-    # 1) Coordination analysis (planner vs atomistic, physical deadweight/transfer).
+    # Coordination analysis: planner vs atomistic, physical deadweight/transfer.
     print("\n########## coordination analysis (physical residual) ##########", flush=True)
     df_coord = an.coordination_analysis(target_count=TC)
     df_coord.to_csv("outputs/table_coordination_analysis.csv", index=False)
     print(df_coord.to_string(index=False), flush=True)
 
-    # 2) Normalized cooperative game (physical DT + max{0,v}).
+    # Normalized cooperative game: physical DT with v_+ = max{0,v}.
     print("\n########## normalized cooperative game ##########", flush=True)
     cs = an.coalition_cost_sharing(target_count=TC)
     cs.to_csv("outputs/table_coalition_cost_sharing.csv", index=False)
@@ -175,7 +167,7 @@ def cmd_coalition(args):
           f"at {cs.attrs.get('closest_blocking_coalition')}  "
           f"core_stable={cs.attrs.get('core_stable')}", flush=True)
 
-    # 3) Budget-balanced transfer table (physical residual).
+    # Budget-balanced transfer table.
     print("\n########## cost-sharing transfer table ##########", flush=True)
     shapley = dict(zip(cs["Bloc"], cs["Shapley allocation ($B)"]))
     df_tr = an.coalition_transfer_table(shapley, target_count=TC)
@@ -187,14 +179,12 @@ def cmd_coalition(args):
     print("\nWrote coordination, game, and transfer outputs.", flush=True)
 
 
-# ---------------------------------------------------------------------------
 # ampspec: amplification-specification benchmark
-# ---------------------------------------------------------------------------
 def cmd_ampspec(args):
     """Re-solve the 100-day full-closure Hormuz benchmark under three amplification
-    specifications and report, for each, the active bundle, the welfare saving, the
-    amplification share of the no-intervention loss, the three most-affected importers,
-    and the value of acting early rather than after a one-stage delay.
+    specifications, reporting per spec the active bundle, welfare saving, amplification
+    share of the no-intervention loss, the three most-affected importers, and the value
+    of acting early rather than after a one-stage delay. Writes outputs/table_ampspec.json.
 
       headline : normalized first-pass, critical-service multiplier eta_s = g_s(1)
       capped   : eta_s = min(1, g_s(1)), loss bounded by own value added
@@ -227,9 +217,9 @@ def cmd_ampspec(args):
     rows = []
     for spec_key, spec_name in SPECS:
         print(f"\n=== {spec_name} ===", flush=True)
-        m0 = _solve((), spec_key)                        # no intervention
-        mO = _solve(mc.ALL_POLICIES, spec_key)           # optimal, immediate
-        mD = _solve(mc.ALL_POLICIES, spec_key, delay=1)  # optimal, one-stage delay
+        m0 = _solve((), spec_key)
+        mO = _solve(mc.ALL_POLICIES, spec_key)
+        mD = _solve(mc.ALL_POLICIES, spec_key, delay=1)  # one-stage delay
         o0, oO, oD = _obj_billion(m0), _obj_billion(mO), _obj_billion(mD)
         saving = 100.0 * (o0 - oO) / o0 if o0 else float("nan")
         comps = an.cost_components(m0)
@@ -237,7 +227,7 @@ def cmd_ampspec(args):
         losses = {code: sum(v["total"] for v in an.sector_damage(m0, code).values()) for code in m0.C}
         top = sorted(losses, key=losses.get, reverse=True)[:3]
         bundle = _active_bundle(mO)
-        early = oD - oO  # extra loss from delaying the same optimized bundle one stage
+        early = oD - oO  # extra loss from delaying the optimized bundle one stage
         row = dict(spec=spec_name, bundle=bundle, saving=round(saving, 1),
                    amp_share=round(amp_share), top=top, early=round(early, 1),
                    noint=round(o0, 1), opt=round(oO, 1))
@@ -257,21 +247,18 @@ def cmd_ampspec(args):
     print("Wrote outputs/table_ampspec.json", flush=True)
 
 
-# ---------------------------------------------------------------------------
 # displacement: reserve/substitute market-displacement sensitivity
-# ---------------------------------------------------------------------------
 def cmd_displacement(args):
-    """Re-solve the 100-day full-closure Hormuz headline (no intervention vs the optimal
-    portfolio) under three market-displacement assumptions applied uniformly to reserve
-    release and the three substitute channels (product stock, refinery-yield, fuel switch):
+    """Re-solve the 100-day full-closure Hormuz headline (no intervention vs optimal
+    portfolio) under three displacement coefficients phi applied uniformly to reserve
+    release and the three substitute channels (product stock, refinery yield, fuel switch).
+    A positive phi lets that share moderate the world price like conservation, lowering the
+    optimized deadweight and raising the saving; the no-intervention case is invariant to
+    phi. Writes outputs/table_displacement.json.
 
       zero    phi = 0.0   domestic coping displaces no world-market purchase (the headline)
       partial phi = 0.5   half of each channel's volume also reduces world demand
-      full    phi = 1.0   one-for-one displacement of world-market purchases
-
-    A positive coefficient lets that share of each channel's volume moderate the world
-    price like conservation, lowering the optimized deadweight and raising the saving;
-    the no-intervention case activates no policy and is invariant to phi."""
+      full    phi = 1.0   one-for-one displacement of world-market purchases"""
     TC = int(os.environ.get("COALITION_TARGET_COUNT", "30"))
     TL = int(os.environ.get("DISP_TIME_LIMIT", "900"))
     print(f"[config] target_count={TC} time_limit={TL}", flush=True)
@@ -295,8 +282,8 @@ def cmd_displacement(args):
     rows = []
     for name, phi in CASES:
         print(f"\n=== displacement {name} (phi={phi}) ===", flush=True)
-        m0 = _solve((), phi)                    # no intervention
-        mO = _solve(mc.ALL_POLICIES, phi)       # optimal, immediate
+        m0 = _solve((), phi)
+        mO = _solve(mc.ALL_POLICIES, phi)
         o0, oO = _obj_billion(m0), _obj_billion(mO)
         saving = 100.0 * (o0 - oO) / o0 if o0 else float("nan")
         bundle = _active_bundle(mO)
@@ -317,15 +304,14 @@ def cmd_displacement(args):
     print("Wrote outputs/table_displacement.json", flush=True)
 
 
-# ---------------------------------------------------------------------------
 # isoelastic: constant-elasticity inverse-demand benchmark
-# ---------------------------------------------------------------------------
 def cmd_isoelastic(args):
     """Re-solve the 100-day full-closure Hormuz benchmark in three regimes under a
-    constant-elasticity inverse demand P(q)=P0 (q/Qbar)^{-1/|eta|} in place of the linear
-    approximation. The market clears at the same reduced quantity in either curve, so
-    only the price, deadweight, and terms-of-trade transfer change. Reports, for each
-    regime, the optimized welfare loss, active bundle, physical deadweight, and transfer."""
+    constant-elasticity inverse demand P(q)=P0 (q/Qbar)^{-1/|eta|} instead of the linear
+    approximation. The market clears at the same reduced quantity either way, so only
+    price, deadweight, and terms-of-trade transfer change. Reports per regime the optimized
+    welfare loss, active bundle, physical deadweight, and transfer. Writes
+    outputs/table_isoelastic.json."""
     TC = int(os.environ.get("COALITION_TARGET_COUNT", "30"))
     TL = int(os.environ.get("ISO_TIME_LIMIT", "1200"))
     _SOLVER = mc._detect_solver(None)
@@ -389,15 +375,13 @@ def cmd_isoelastic(args):
     print("Wrote outputs/table_isoelastic.json", flush=True)
 
 
-# ---------------------------------------------------------------------------
 # isogame: constant-elasticity cooperative game and core
-# ---------------------------------------------------------------------------
 def cmd_isogame(args):
-    """Recompute the six-bloc cooperative game under the constant-elasticity inverse
-    demand, so the Shapley allocation, minimum proper-coalition core excess, and
-    stand-alone values can be compared with the linear benchmark. The isoelastic price
-    channel is much larger, so the grand-coalition value and the allocation shift, though
-    the underlying policy bundles are stable."""
+    """Recompute the six-bloc cooperative game under constant-elasticity inverse demand to
+    compare the Shapley allocation, minimum proper-coalition core excess, and stand-alone
+    values against the linear benchmark. The larger isoelastic price channel shifts the
+    grand-coalition value and allocation while the policy bundles stay stable. Writes
+    outputs/table_coalition_isoelastic.csv and coalition_game_isoelastic.json."""
     TC = int(os.environ.get("COALITION_TARGET_COUNT", "30"))
     print(f"[config] target_count={TC} price_curve=isoelastic", flush=True)
     os.makedirs("outputs", exist_ok=True)
@@ -417,16 +401,13 @@ def cmd_isogame(args):
     print("Wrote outputs/table_coalition_isoelastic.csv", flush=True)
 
 
-# ---------------------------------------------------------------------------
 # grid-refine: deadweight-grid refinement for the isoelastic benchmark
-# ---------------------------------------------------------------------------
 def cmd_grid_refine(args):
-    """Re-solve the isoelastic three-regime benchmark at the default 12-breakpoint
-    deadweight tangent grid and again at a doubled 24-breakpoint grid, and report the
-    headline saving under each and their difference. This certifies (rather than assumes)
-    that the piecewise-linear policy-selection error is negligible. The market clears at
-    the same reduced quantity in either grid, so only the objective's tangent
-    under-approximation changes."""
+    """Re-solve the isoelastic three-regime benchmark at the default 12-breakpoint and a
+    doubled 24-breakpoint deadweight tangent grid, reporting the headline saving under each
+    and their difference to certify that the piecewise-linear selection error is negligible.
+    The quantity clears identically either way, so only the objective's tangent
+    under-approximation changes. Writes outputs/grid_refine.json."""
     TC = int(os.environ.get("COALITION_TARGET_COUNT", "30"))
     TL = int(os.environ.get("ISO_TIME_LIMIT", "1200"))
     GAP = float(os.environ.get("GRID_MIP_GAP", "1e-4"))
@@ -477,16 +458,13 @@ def cmd_grid_refine(args):
     print("Wrote outputs/grid_refine.json", flush=True)
 
 
-# ---------------------------------------------------------------------------
 # stagelen: stage-length (decision-frequency) sensitivity
-# ---------------------------------------------------------------------------
 def cmd_stagelen(args):
     """Re-solve the linear headline three-regime full-closure benchmark at stage lengths
-    of 20, 25, and 30 days (holding the 100-day SPR-coverage horizon fixed), and report
-    the saving and the active bundle under each. With the product-stock inventory fixed in
-    barrels rather than in stages of capacity, the instrument ranking and saving should be
-    stable across the decision frequency; per-stage flow capacities scale with the stage
-    length while the physical inventory stays fixed."""
+    of 20, 25, and 30 days (100-day horizon fixed), reporting the saving and active bundle
+    under each. Per-stage flow capacities scale with stage length while the barrel-fixed
+    product-stock inventory stays fixed, so the instrument ranking and saving should be
+    stable across decision frequency. Writes outputs/stage_length_sensitivity.json."""
     TC = int(os.environ.get("COALITION_TARGET_COUNT", "30"))
     TL = int(os.environ.get("STAGE_TIME_LIMIT", "1200"))
     GAP = float(os.environ.get("STAGE_MIP_GAP", "1e-4"))
@@ -535,16 +513,13 @@ def cmd_stagelen(args):
     print("Wrote outputs/stage_length_sensitivity.json", flush=True)
 
 
-# ---------------------------------------------------------------------------
 # core-shard: one shard of the certified core-stability re-run (HPC fan-out)
-# ---------------------------------------------------------------------------
 def cmd_core_shard(args):
     """Solve one shard of the certified core-stability re-run for HPC fan-out. The 63
-    non-empty bloc coalitions are enumerated in a fixed order and partitioned across
-    SHARD_COUNT parallel jobs by index. Every shard also re-solves the no-intervention
-    baseline (deterministic under the fixed seed, hence identical across shards) to obtain
-    the realized shares and the reference world-price cost, so each shard is
-    self-contained and the combined result equals a single-node run. Writes
+    non-empty bloc coalitions are enumerated in fixed order and partitioned across
+    SHARD_COUNT jobs by index. Every shard also re-solves the (deterministic, seed-fixed)
+    no-intervention baseline for the realized shares and reference world-price cost, so
+    each shard is self-contained and the combined result equals a single-node run. Writes
     outputs/shards/core_shard_{index:02d}.json.
 
     Environment:
@@ -588,13 +563,13 @@ def cmd_core_shard(args):
         an.gc.collect()
         return (b, sh) if want_shares else b
 
-    # No-intervention baseline (empty coalition): realized shares and reference costs.
+    # No-intervention baseline (empty coalition): realized shares and reference cost.
     nc, real_share = _solve([], want_shares=True)
     share = {b: real_share.get(b, base_share[b]) for b in blocs}
     dt_nc = nc["dt"]
     wprime_nc = nc["efficiency"] - nc["deadweight"]
 
-    # Deterministic enumeration of the 63 non-empty coalitions, partitioned by index.
+    # Enumerate the 63 non-empty coalitions in fixed order, partition by shard index.
     all_S = [S for r in range(1, len(blocs) + 1) for S in combinations(blocs, r)]
     my_S = [S for i, S in enumerate(all_S) if i % SHARD_COUNT == (SHARD_INDEX - 1)]
     print(f"[shard {SHARD_INDEX}] solving {len(my_S)} of {len(all_S)} coalitions", flush=True)
@@ -626,15 +601,13 @@ def cmd_core_shard(args):
     print(f"[shard {SHARD_INDEX}] wrote {path}  max_gap={out['max_gap']}", flush=True)
 
 
-# ---------------------------------------------------------------------------
 # core-combine: combine the core-certification shards into the final game
-# ---------------------------------------------------------------------------
 def cmd_core_combine(args):
-    """Read every outputs/shards/core_shard_*.json produced by the LSF fan-out, assemble
-    the full characteristic function, and compute the Shapley allocation, individual
-    rationality, the minimum proper-coalition core excess, and the certification (the
-    maximum achieved solve gap and the resulting numerical-uncertainty scale). Output
-    matches a single-node coalition_cost_sharing run exactly.
+    """Read every outputs/shards/core_shard_*.json from the LSF fan-out, assemble the full
+    characteristic function, and compute the Shapley allocation, individual rationality,
+    minimum proper-coalition core excess, and the certification (max achieved gap and the
+    resulting numerical-uncertainty scale). Matches a single-node coalition_cost_sharing
+    run. Writes outputs/table_coalition_certify_{tag}.csv and core_certify_{tag}.json.
 
     Environment: PRICE_CURVE (linear | isoelastic)"""
     import pandas as pd  # noqa: E402
@@ -655,10 +628,8 @@ def cmd_core_combine(args):
     share = base["share"]
     dt_nc = base["dt_nc"]
 
-    # Each shard re-solved the no-intervention baseline independently. At the 1e-4 gap
-    # these should agree to several significant figures, warn if any shard's reference
-    # world-price cost drifts by more than 0.1%, which would signal a nondeterministic
-    # baseline.
+    # Shards re-solve the baseline independently; warn if the reference cost drifts more
+    # than 0.1% across them, which would signal a nondeterministic baseline.
     _dt_vals = [s["dt_nc"] for s in shards]
     _spread = (max(_dt_vals) - min(_dt_vals)) / max(abs(dt_nc), 1e-9)
     if _spread > 1e-3:
@@ -669,7 +640,7 @@ def cmd_core_combine(args):
         print(f"[check] baseline consistent across {len(shards)} shards "
               f"(dt_nc spread {_spread:.2e}).", flush=True)
 
-    # Merge the raw coalition values and the achieved gaps.
+    # Merge raw coalition values and achieved gaps.
     v_raw = {}
     gaps = []
     for s in shards:
@@ -677,7 +648,7 @@ def cmd_core_combine(args):
         if s.get("max_gap") is not None:
             gaps.append(s["max_gap"])
 
-    # Full characteristic function with the zero outside option, v(S) = max(0, v_raw(S)).
+    # Characteristic function with zero outside option: v(S) = max(0, v_raw(S)).
     value_fn = {(): 0.0}
     for key, vr in v_raw.items():
         value_fn[tuple(sorted(key.split("+")))] = max(0.0, float(vr))
@@ -731,17 +702,15 @@ def cmd_core_combine(args):
     print(f"Wrote outputs/core_certify_{tag}.json and table_coalition_certify_{tag}.csv", flush=True)
 
 
-# ---------------------------------------------------------------------------
 # core-certify: certified core-stability of the cooperative game (single node)
-# ---------------------------------------------------------------------------
 def cmd_core_certify(args):
-    """Re-solve the six-bloc cooperative game (64 coalitions) at a tightened relative
-    optimality gap (default 1e-4) and record, for each solve, the achieved gap and hence
-    a transparent numerical-uncertainty scale on the objective. Reports the minimum
-    proper-coalition core excess together with that uncertainty, so the "strictly inside
-    the core" claim can be certified rather than asserted at the coarser 1e-3 gap. Runs
-    the linear headline game by default; set PRICE_CURVE=isoelastic to certify the
-    constant-elasticity game as well."""
+    """Re-solve the six-bloc cooperative game (64 coalitions) at a tightened relative gap
+    (default CORE_MIP_GAP=1e-4), recording each solve's achieved gap as a numerical-
+    uncertainty scale on the objective. Reports the minimum proper-coalition core excess
+    with that uncertainty so the "strictly inside the core" claim is certified rather than
+    asserted at the coarser 1e-3 gap. Runs the linear game by default; PRICE_CURVE=isoelastic
+    certifies the constant-elasticity game. Writes outputs/table_coalition_certify_{tag}.csv
+    and core_certify_{tag}.json."""
     TC = int(os.environ.get("COALITION_TARGET_COUNT", "30"))
     GAP = float(os.environ.get("CORE_MIP_GAP", "1e-4"))
     TL = int(os.environ.get("CORE_TIME_LIMIT", "1200"))
@@ -764,11 +733,13 @@ def cmd_core_certify(args):
     print(f"Wrote outputs/core_certify_{tag}.json", flush=True)
 
 
-# ---------------------------------------------------------------------------
 # robustness: full robustness and sensitivity sweep
-# ---------------------------------------------------------------------------
 def cmd_robustness(args):
-    """Reproduce the robustness and sensitivity checks, writing CSVs.
+    """Reproduce the robustness and sensitivity checks, writing one CSV per check under
+    outputs/ (table_cascade_weight_gap.csv, table_escvi_stability.csv,
+    table_transition_robustness.csv, table_loss_distribution.csv, table_attrition_ranking.csv,
+    and the further _guard checks below), plus coalition_game_summary.json and
+    joint_uncertainty_summary.json.
 
     Fast checks (no optimization):
       cascade_weight_gap        first-order vs Leontief-inverse cascade weights
@@ -779,10 +750,9 @@ def cmd_robustness(args):
       loss_distribution_cvar              27-path loss distribution + CVaR
       attrition_ranking_stability         instrument ranking under attrition
 
-    Resolution knobs (defaults are the memory-lean desktop settings; on the HPC set
-    COALITION_TARGET_COUNT=30 for the full 27-path tree, raise JOINT_DRAWS, and widen
-    FIXED_STAGE_COUNTS, e.g. 4,5,6). GEO_RESUME=1 skips any check whose CSV already
-    exists."""
+    Defaults are memory-lean desktop settings; on the HPC set COALITION_TARGET_COUNT=30 for
+    the full 27-path tree, raise JOINT_DRAWS, and widen FIXED_STAGE_COUNTS (e.g. 4,5,6).
+    GEO_RESUME=1 skips any check whose CSV already exists."""
     COALITION_TC = int(os.environ.get("COALITION_TARGET_COUNT", "9"))
     JOINT_DRAWS = int(os.environ.get("JOINT_DRAWS", "200"))
     FIXED_STAGE_COUNTS = tuple(int(x) for x in
@@ -790,7 +760,6 @@ def cmd_robustness(args):
     print(f"[config] COALITION_TC={COALITION_TC}  JOINT_DRAWS={JOINT_DRAWS}  "
           f"FIXED_STAGE_COUNTS={FIXED_STAGE_COUNTS}", flush=True)
 
-    # Robustness and sensitivity functions are provided by the analysis module.
     cascade_weight_gap = an.cascade_weight_gap
     escvi_weight_stability = an.escvi_weight_stability
     transition_perturbation_robustness = an.transition_perturbation_robustness
@@ -803,10 +772,9 @@ def cmd_robustness(args):
     RESUME = os.environ.get("GEO_RESUME") == "1"
 
     def _guard(label, fn, path, preview_rows=12):
-        """Run one check, write its CSV, and continue past any failure so a single
-        heavy or memory-bound check cannot abort the whole sweep. With GEO_RESUME=1
-        a check whose output CSV already exists is skipped, so an HPC job that ran
-        out of walltime can be re-submitted and picks up where it stopped."""
+        """Run one check and write its CSV, swallowing any failure so one heavy check
+        cannot abort the sweep. With GEO_RESUME=1 a check whose CSV exists is skipped, so
+        a walltime-killed HPC job can be re-submitted and resumes where it stopped."""
         print(f"\n=== {label} ===", flush=True)
         if RESUME and os.path.exists(path):
             print(f"  RESUME: {path} already exists, skipping.", flush=True)
@@ -845,7 +813,7 @@ def cmd_robustness(args):
     ar.to_csv("outputs/table_attrition_ranking.csv", index=False)
     print(ar.to_string(index=False), flush=True)
 
-    # Additional checks (fast checks first, solve-heavy checks last).
+    # Additional checks, fast ones first.
     _guard("Import dependence and exposure disclosure",
            an.exposure_disclosure, "outputs/table_exposure_disclosure.csv")
 
@@ -865,8 +833,7 @@ def cmd_robustness(args):
     _guard("Logistics realism: derated delivery capacity",
            logistics_derating_robustness, "outputs/table_logistics_derating.csv")
 
-    # Coordination layer: decentralized (noncooperative) vs planner, and the
-    # cooperative-game cost-sharing across regional blocs.
+    # Coordination layer: noncooperative vs planner, and cooperative cost-sharing.
     _guard("Coordination analysis (noncooperative vs planner, monopsony)",
            an.coordination_analysis, "outputs/table_coordination_analysis.csv")
 
@@ -880,8 +847,8 @@ def cmd_robustness(args):
                                                  "closest_blocking_coalition")
                        if k in cs.attrs}, fh, indent=2)
 
-    # Heaviest check last: the Monte-Carlo joint uncertainty sweep. The default 200
-    # draws matches the paper; reduce JOINT_DRAWS for a faster, approximate pass.
+    # Heaviest check last: Monte-Carlo joint uncertainty. Default JOINT_DRAWS=200 matches
+    # the paper; lower it for a faster approximate pass.
     def _joint():
         return joint_uncertainty_analysis(n_draws=JOINT_DRAWS)
     ju = _guard(f"Joint uncertainty (Monte-Carlo, {JOINT_DRAWS} draws)", _joint,
@@ -895,24 +862,19 @@ def cmd_robustness(args):
     print("\nDONE. Wrote the robustness CSVs in outputs/.", flush=True)
 
 
-# ---------------------------------------------------------------------------
 # build-cascade: rebuild the six-sector cascade matrix beta from WIOD tables
-# ---------------------------------------------------------------------------
 def cmd_build_cascade(args):
-    """Reproducible construction of the six-sector inter-sector cascade matrix beta
-    (config.BETA and data/cascade_beta.csv) from the WIOD 2016 world input-output tables
-    (Timmer et al., 2015; Groningen Dataverse DOI 10.34894/PJ2M1C, the "WIOTS_in_EXCEL"
-    release, one .xlsb file per year).
+    """Reproducibly build the six-sector cascade matrix beta (config.BETA and
+    data/cascade_beta.csv) from the WIOD 2016 world input-output tables (Timmer et al.,
+    2015; Groningen Dataverse DOI 10.34894/PJ2M1C, WIOTS_in_EXCEL release, one .xlsb per year).
 
-    Energy-restricted method: the model's six sectors are energy-demand categories, so the
-    cascade carries each sector's dependence on ENERGY inputs, not on all intermediate
-    inputs by dollar value. The SUPPLIER side is restricted to the energy-carrying WIOD
-    industries (D35 -> electricity, C19 -> industry, H49..H53 -> transport). For each
-    country and year, beta[a, s] is the share of user-sector a's total intermediate input
-    that is energy of type s (diagonal excluded); beta is averaged over the major
-    economies and rescaled by one global factor so the total intensity matches
-    TARGET_INTENSITY. Regenerates data/cascade_beta.csv and prints the config.BETA
-    literal."""
+    Energy-restricted method: the six sectors are energy-demand categories, so beta carries
+    each sector's dependence on ENERGY inputs, not on all intermediate inputs by dollar value.
+    The supplier side is restricted to the energy-carrying WIOD industries (D35 -> electricity,
+    C19 -> industry, H49..H53 -> transport). Per country, beta[a, s] is the share of user
+    sector a's total intermediate input that is energy of type s (diagonal excluded), averaged
+    over the major economies and rescaled by one global factor to TARGET_INTENSITY. Writes
+    data/cascade_beta.csv and prints the config.BETA literal."""
     from pathlib import Path
     import numpy as np  # noqa: F401
     import pandas as pd
@@ -951,8 +913,8 @@ def cmd_build_cascade(args):
     TARGET_INTENSITY = 2.58   # calibrated overall cascade intensity (sum of beta)
 
     def _read_year(year):
-        """Read one WIOT .xlsb file, returning the data rows for the TARGET economies
-        plus the column bookkeeping needed to slice each one."""
+        """Read one WIOT .xlsb file, returning the TARGET-economy rows plus the column
+        bookkeeping needed to slice each one."""
         f = WIOD_DIR / f"WIOT{year}_Nov16_ROW.xlsb"
         hdr = pd.read_excel(f, engine="pyxlsb", header=None, nrows=6)
         use_ind = hdr.iloc[2].astype("string").str.strip()     # using-industry code per column
@@ -1024,9 +986,7 @@ def cmd_build_cascade(args):
         print(f'    "{a}":{" " * (13 - len(a))}{{{items}}},')
 
 
-# ---------------------------------------------------------------------------
 # CLI
-# ---------------------------------------------------------------------------
 SUBCOMMANDS = [
     ("reconcile", cmd_reconcile,
      "three-regime reconciliation + computational disclosure"),

@@ -1,8 +1,6 @@
 """Post-solve analysis for the maritime chokepoint model.
 
-Single flat module combining result tables and diagnostics, publication
-figures, correctness-invariant checks, and the cascade-coefficient
-robustness sweep. Depends only on model (the optimization stack).
+Result tables, publication figures, correctness invariants, and robustness sweeps. Depends only on model.
 """
 from __future__ import annotations
 
@@ -11,22 +9,12 @@ import model
 from model import *          # optimization stack (public names)
 from model import _detect_solver
 
-# Aliases the former package used internally:
+# Aliases kept for the former split-package call sites.
 scen = model                 # validation.py: `from . import model as scen`
 mt = sys.modules[__name__]        # results/figures alias `from . import results as mt`
 
 
-# ======================================================================
-# RESULTS: tables, attribution, diagnostics
-# ======================================================================
-"""
-Result tables and diagnostics built from the solved MIP.
-
-Regime / regional / country / transferability tables and the efficiency-equity
-frontier (mip_tables), policy attribution (Shapley / sequential / leave-one-out),
-timing-delay and duration-sensitivity sweeps, VSS / EVPI stochastic diagnostics,
-and descriptive screens (ESCVI, Gini, model-variant comparison).
-"""
+# RESULTS: tables, attribution, diagnostics built from the solved MIP.
 
 import gc
 import time
@@ -40,14 +28,12 @@ import pyomo.environ as pyo
 
 
 
-# Emergency substitute-supply capability as a share of demand (P6 total, ~5%),
-# credited as an alternative in the ESCVI alternative-supply gap.
+# Emergency substitute-supply capability as a share of demand (P6 total, ~5%); credited in the ESCVI alternative-supply gap.
 SUBSTITUTE_ALT_FRAC: float = 0.05
 
 REACTIVE: Tuple[str, ...] = ("P1", "P2", "P3")
 
-# Cache solved models by solve args so country/regional/sector tables reuse one
-# inaction/proactive solve.
+# Cache solved models by solve args so country/regional/sector tables reuse one solve.
 _solve_cache: Dict[tuple, "pyo.ConcreteModel"] = {}
 
 
@@ -63,9 +49,7 @@ def solve(policy_subset: Sequence[str] = ALL_POLICIES,
           cache: bool = True) -> "pyo.ConcreteModel":
     """Build and solve the MIP; return the solved model.
 
-    Solved models are large, so only the reused inaction/reactive/proactive
-    Hormuz solves are cached. Parameter sweeps pass ``cache=False`` so each
-    model is released after its scalars are read, bounding peak memory.
+    Only reused Hormuz solves are cached; sweeps pass cache=False to release each large model after reading its scalars.
     """
     disrupted = disrupted_chokepoints_for_class(scenario_class, chokepoint)
     choke_label = "+".join(disrupted) if isinstance(disrupted, list) else disrupted
@@ -93,38 +77,28 @@ def solve(policy_subset: Sequence[str] = ALL_POLICIES,
     m._objective_value = float(info["objective"])
     if cache:
         _solve_cache[key] = m
-        # Keep only the 4 most recent solves, they are large.
+        # Keep only the 4 most recent solves (they are large).
         while len(_solve_cache) > 4:
             _solve_cache.pop(next(iter(_solve_cache)))
     return m
 
 
-# ---------------------------------------------------------------------------
 # Extraction primitives
-# ---------------------------------------------------------------------------
 def _cscale(m, n, s, t) -> float:
-    """Economic-size scaling of the amplification term (1.0 if the model
-    predates the scaled formulation)."""
+    """Economic-size scaling of the amplification term (1.0 if the model predates the scaled formulation)."""
     return pyo.value(m.casc_scale[n, s, t]) if hasattr(m, "casc_scale") else 1.0
 
 
 def country_damage(m, include_price: bool = True) -> Dict[str, float]:
     """Per-country expected economic loss (USD billion) from the solved model.
 
-    Three channels: direct shortage (pi*h), cross-sector cascade (eta*Delta),
-    and a share of the global oil-price welfare cost. The price cost is one
-    world-wide objective term, attributed to each country by served consumption
-    q (unserved barrels are already charged via the shortage term). The shares
-    telescope exactly to that term, so the cost decomposition still reconciles.
-    Pass ``include_price=False`` for the physical shortage + cascade burden only.
+    Channels: direct shortage (pi*h), cross-sector cascade (eta*Delta), and a share of the global oil-price welfare cost. include_price=False gives shortage + cascade only.
     """
     has_casc = hasattr(m, "Delta")
     pw = realized_scenario_probs(m)
     use_price = include_price and hasattr(m, "dwl")
 
-    # The world-price deadweight is one aggregate welfare term. Attribute it to
-    # each country by its served-consumption share (unserved barrels are already
-    # charged by the shortage term), so the shares telescope to the aggregate.
+    # Attribute the single world-price deadweight term by served-consumption share (unserved barrels already charged by the shortage term), so shares telescope to the aggregate.
     price_total = 0.0
     qshare = {n: 0.0 for n in m.C}
     if use_price:
@@ -192,9 +166,7 @@ def sector_damage(m, code: str) -> Dict[str, Dict[str, float]]:
 
 
 def cost_components(m) -> Dict[str, float]:
-    """Objective decomposition (USD billion), term by term: transport (with the
-    maritime freight/war-risk premium), policy activation, direct shortage,
-    cross-sector cascade, oil-price increase, and the priority-floor equity penalty.
+    """Objective decomposition (USD billion): transport (with maritime freight/war-risk premium), policy activation, direct shortage, cascade, oil-price increase, and priority-floor equity penalty.
     """
     pw = realized_scenario_probs(m)
     has = hasattr(m, "Delta")
@@ -210,8 +182,7 @@ def cost_components(m) -> Dict[str, float]:
     cascade = (sum(pw[w] * pyo.value(m.equity_mult[n, s]) * pyo.value(m.eta_ns[n, s])
                    * _cscale(m, n, s, t) * pyo.value(m.Delta[n, s, t, w])
                    for n in m.C for s in m.S for t in m.T for w in m.OMEGA) / 1e3) if has else 0.0
-    # Price channel enters the welfare objective as the deadweight loss only (the
-    # real resource cost of the world-price rise), not the terms-of-trade transfer.
+    # Price channel enters welfare as the deadweight loss only (real resource cost of the price rise), not the terms-of-trade transfer.
     price = (sum(pw[w] * pyo.value(m.dwl[t, w])
                  for t in m.T for w in m.OMEGA) / 1e3) \
         if hasattr(m, "dwl") else 0.0
@@ -239,9 +210,7 @@ def cost_components(m) -> Dict[str, float]:
            "Cascade": cascade, "Oil price": price, "Equity floor": floor,
            "Curtailment": curtail, "Reserve": reserve, "Substitute": substitute}
     out["Total"] = sum(v for k, v in out.items() if k != "Total")
-    # Memos (excluded from the welfare Total). The terms-of-trade transfer to
-    # producers is a redistribution, levied on the coalition's cleared consumption
-    # Q0(1 - dQ/Qbar), importer expenditure adds this transfer to the welfare loss.
+    # Memos (excluded from welfare Total). Terms-of-trade transfer to producers is a redistribution, levied on cleared consumption Q0(1 - dQ/Qbar); importer expenditure adds it to the welfare loss.
     if hasattr(m, "price_loss"):
         ws = float(WORLD_OIL_SUPPLY_MBD * STAGE_DAYS)
         transfer = sum(pw[w] * pyo.value(m.price_coef[t]) * pyo.value(m.price_loss[t, w])
@@ -261,9 +230,7 @@ def gini(values: np.ndarray) -> float:
     return float((2.0 * np.sum(idx * v)) / (n * np.sum(v)) - (n + 1) / n)
 
 
-# ---------------------------------------------------------------------------
 # Result tables (all MIP-derived)
-# ---------------------------------------------------------------------------
 def top_absolute_losses(top_n: int = 10, target_count: int = 15) -> pd.DataFrame:
     """Per-country inaction vs. proactive expected loss, ranked (MIP)."""
     net = get_network()
@@ -317,9 +284,7 @@ def regional_losses(target_count: int = 15) -> pd.DataFrame:
 def transferability(target_count: int = 15) -> pd.DataFrame:
     """Inaction vs. proactive total expected loss for Hormuz, Malacca, Suez (MIP).
 
-    Loss and saving use the full MIP objective (transport + policy + shortage +
-    cascade), the system-level cost-benefit view. The per-country and regional
-    tables instead report damage borne by each economy (shortage + cascade only).
+    Loss and saving use the full MIP objective (system-level cost-benefit view), unlike the per-country and regional tables which report only shortage + cascade borne by each economy.
     """
     cps = [("Strait of Hormuz", "CP_HORMUZ", 20.5),
            ("Strait of Malacca", "CP_MALACCA", 16.0),
@@ -368,11 +333,7 @@ def equity_frontier(weights: Optional[List[float]] = None,
                     scenario_class: str = "full_closure") -> pd.DataFrame:
     """Efficiency-equity frontier (MIP).
 
-    Sweep the equity weight on vulnerable countries' priority sectors, solve the
-    proactive MIP, and report aggregate expected damage (always at the true
-    penalties) vs. the oil-access Gini. As the weight rises the planner diverts
-    scarce oil toward vulnerable economies: more equal access (lower Gini) at the
-    cost of higher damage. ``scenario_class`` selects the disruption severity.
+    Sweep the equity weight on vulnerable countries' priority sectors and report aggregate expected damage (at true penalties) vs. oil-access Gini. Higher weight diverts scarce oil to vulnerable economies: lower Gini at higher damage. scenario_class sets the disruption severity.
     """
     if weights is None:
         weights = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0]
@@ -412,12 +373,9 @@ def solve_all_subsets(policies: Sequence[str] = ALL_POLICIES,
                       n_jobs: int = 1,
                       verbose: bool = True
                       ) -> Dict[Tuple[str, ...], float]:
-    """
-    Solve the MIP for every subset of ``policies``.
+    """Solve the MIP for every subset of policies.
 
-    Returns {subset (sorted tuple): expected-loss objective}. Infeasible
-    solves map to ``float('inf')`` to keep the value function well-defined.
-    solve_mip caches to disk, so repeat calls are nearly free.
+    Returns {subset (sorted tuple): expected-loss objective}; infeasible solves map to inf to keep the value function well-defined. solve_mip caches to disk.
     """
     subsets = _enumerate_subsets(policies)
     n = len(subsets)
@@ -463,10 +421,9 @@ def solve_all_subsets(policies: Sequence[str] = ALL_POLICIES,
 
 def _value_function(subset_objs: Dict[Tuple[str, ...], float]
                     ) -> Dict[Tuple[str, ...], float]:
-    """
-    Characteristic function v(S) = obj(empty) - obj(S), the loss reduction
-    from S. So v(empty) = 0 and v is monotone non-decreasing (adding policies
-    cannot worsen the optimum).
+    """Characteristic function v(S) = obj(empty) - obj(S), the loss reduction from S.
+
+    v(empty) = 0 and v is monotone non-decreasing (adding policies cannot worsen the optimum).
     """
     baseline = subset_objs[tuple()]
     return {s: baseline - obj for s, obj in subset_objs.items()}
@@ -520,13 +477,10 @@ def attribution_table(scenario_class: str = "full_closure",
                        policies: Sequence[str] = ALL_POLICIES,
                        n_jobs: int = 1,
                        verbose: bool = True) -> pd.DataFrame:
-    """
-    Consolidated attribution table: Shapley ($B, %), sequential cheap-first
-    and fast-first ($B), and leave-one-out ($B, %) per instrument.
+    """Consolidated attribution table per instrument: Shapley ($B, %), sequential cheap-first and fast-first ($B), leave-one-out ($B, %).
 
-    Dollar values are in $B (MIP objective is $M, divided by 1000).
+    Dollar values are $B (MIP objective is $M, divided by 1000).
     """
-    # Solve every subset
     subset_objs = solve_all_subsets(
         policies=policies,
         scenario_class=scenario_class,
@@ -538,8 +492,7 @@ def attribution_table(scenario_class: str = "full_closure",
         verbose=verbose,
     )
 
-    # Value function (loss reduction in $M)
-    value_fn = _value_function(subset_objs)
+    value_fn = _value_function(subset_objs)   # loss reduction in $M
     total_saving = value_fn[tuple(sorted(policies))]
 
     if verbose:
@@ -549,14 +502,13 @@ def attribution_table(scenario_class: str = "full_closure",
         print(f"Total saving:              {total_saving / 1000:,.1f} $B "
               f"({total_saving / subset_objs[tuple()] * 100:.1f}%)")
 
-    # Three attributions
     shapley = _shapley_values(value_fn, policies)
 
-    # Cheap-first: ascending activation cost
+    # Cheap-first: ascending activation cost.
     cheap_order = sorted(policies, key=lambda p: POLICY_DICT[p].cost)
     cheap_seq = _sequential_attribution(value_fn, cheap_order)
 
-    # Fast-first: reversible before irreversible, cost as tie-breaker
+    # Fast-first: reversible before irreversible, cost as tie-breaker.
     fast_order = sorted(policies,
                         key=lambda p: (POLICY_DICT[p].irreversible,
                                        POLICY_DICT[p].cost))
@@ -564,8 +516,7 @@ def attribution_table(scenario_class: str = "full_closure",
 
     loo = _leave_one_out(value_fn, policies)
 
-    # Assemble table ($B). Round noise (|x| < 0.005) to 0.0 so inactive
-    # policies display clean zeros.
+    # Round noise (|x| < 0.005) to 0.0 so inactive policies display clean zeros.
     def _clean(x: float) -> float:
         r = round(x, 2)
         return 0.0 if abs(r) < 0.005 else r
@@ -586,7 +537,6 @@ def attribution_table(scenario_class: str = "full_closure",
 
     df = pd.DataFrame(rows)
 
-    # Summary row
     summary_row = {
         "Instrument": "Total (full portfolio)",
         "Shapley ($B)":            _clean(sum(shapley.values()) / 1000),
@@ -620,9 +570,7 @@ def regime_comparison(scenario_classes: Sequence[str] = (
                       enable_cascade: bool = True,
                       chokepoint: str = "CP_HORMUZ",
                       verbose: bool = True) -> pd.DataFrame:
-    """
-    Scenario-class by regime comparison table (No intervention, Reactive,
-    Full proactive, Saving %). All values in $B from the MIP objective.
+    """Scenario-class by regime comparison (No intervention, Reactive, Full proactive, Saving %). Values in $B from the MIP objective.
     """
     labels = {
         "partial_restriction": "Partial restriction",
@@ -661,22 +609,15 @@ def regime_comparison(scenario_classes: Sequence[str] = (
     return pd.DataFrame(rows)
 
 
-# ---------------------------------------------------------------------------
-# Timing-delay analysis
-# ---------------------------------------------------------------------------
 def timing_delay_mip(scenario_class: str = "full_closure",
                       target_count: int = 15,
                       policy_subset: Sequence[str] = ALL_POLICIES,
                       chokepoint: str = "CP_HORMUZ",
                       enable_cascade: bool = True,
                       verbose: bool = True) -> pd.DataFrame:
-    """
-    Solve the stochastic MIP under each level of delay tau = 0..NUM_STAGES,
-    forcing z = 0 for all stages 0..tau-1.
+    """Solve the stochastic MIP under each delay tau = 0..NUM_STAGES, forcing z = 0 for stages 0..tau-1.
 
-    Returns a DataFrame with columns:
-        Scenario, Delay (stages), Delay (days),
-        Loss ($B), Vs immediate (%).
+    Columns: Scenario, Delay (stages), Delay (days), Loss ($B), Vs immediate (%).
     """
     rows = []
     immediate_obj = None
@@ -719,28 +660,15 @@ def timing_delay_mip(scenario_class: str = "full_closure",
     return pd.DataFrame(rows)
 
 
-# ---------------------------------------------------------------------------
-# Duration-sensitivity analysis
-# ---------------------------------------------------------------------------
 def duration_sensitivity_mip(durations: Optional[List[int]] = None,
                               scenario_class: str = "full_closure",
                               target_count: int = 15,
                               chokepoint: str = "CP_HORMUZ",
                               enable_cascade: bool = True,
                               verbose: bool = True) -> pd.DataFrame:
-    """
-    Sweep the disruption duration and solve the MIP for each value under
-    three policy regimes: no intervention, reactive bundle, full proactive.
+    """Sweep disruption duration under three regimes: no intervention, reactive bundle, full proactive.
 
-    Implementation
-    --------------
-    The MIP keeps its four-stage structure, but each stage's wall-clock length
-    is set to ``duration_days / NUM_STAGES`` (which may be fractional, so any
-    horizon is represented exactly). This rescales the per-stage demand, reserve
-    drawdown caps, and substitute-supply caps proportionally, leaving the
-    scenario tree, nonanticipativity, and policy-activation logic unchanged.
-    The sweep is parametric: stage-level decisions become coarser as the stage
-    length grows.
+    The MIP keeps four stages but each stage length is duration_days / NUM_STAGES (may be fractional, so any horizon is exact). This rescales per-stage demand, reserve drawdown caps, and substitute caps proportionally, leaving tree, nonanticipativity, and activation logic unchanged. Stage decisions coarsen as stage length grows.
     """
     if durations is None:
         durations = [40, 80, 100, 200, 300, 365]
@@ -753,10 +681,7 @@ def duration_sensitivity_mip(durations: Optional[List[int]] = None,
 
     rows = []
     for d in durations:
-        # Realize the requested duration as NUM_STAGES equal stages of
-        # d / NUM_STAGES days each. The stage length may be fractional, so the
-        # simulated horizon equals the requested duration exactly (e.g. a
-        # 365-day disruption is four 91.25-day stages).
+        # NUM_STAGES equal stages of d/NUM_STAGES days (may be fractional, so the horizon is exact, e.g. 365 days = four 91.25-day stages).
         sd = d / NUM_STAGES
         horizon = NUM_STAGES * sd
         row = {"Duration (days)": int(round(horizon)), "Stage length (days)": round(sd, 2)}
@@ -771,12 +696,7 @@ def duration_sensitivity_mip(durations: Optional[List[int]] = None,
                           verbose=False)
             obj_b = r.objective / 1000 if r.objective is not None else float("nan")
             row[name] = round(obj_b, 1)
-        # Zero activation is always feasible for the optimized program, so its value
-        # weakly dominates no intervention. On the heavy long-horizon endogenous model
-        # the solver can hit its time limit with a suboptimal incumbent above the
-        # inaction value it can always attain by choosing z=0. We therefore floor the
-        # optimized loss at the inaction loss. The reactive bundle is a committed set
-        # and may still exceed inaction, which is a genuine result, not an artifact.
+        # z=0 is always feasible, so the optimized value weakly dominates inaction. On heavy long-horizon solves the time limit can leave a suboptimal incumbent above the attainable inaction value, so floor optimized at inaction. The reactive bundle is committed and may genuinely exceed inaction.
         if row.get("No intervention") and \
                 row.get("Full proactive", float("inf")) > row["No intervention"]:
             row["Full proactive"] = row["No intervention"]
@@ -796,7 +716,7 @@ def duration_sensitivity_mip(durations: Optional[List[int]] = None,
 
 def _deterministic_scenario(path: List[float]) -> List[Scenario]:
     """Wrap a single availability path as a 1-scenario list with named state labels."""
-    # Label each fraction by its nearest named state
+    # Label each fraction by its nearest named state.
     avail_to_state = {v: k for k, v in STATE_AVAILABILITY.items()}
     states = []
     for a in path:
@@ -807,18 +727,16 @@ def _deterministic_scenario(path: List[float]) -> List[Scenario]:
                      states=states, availability=path)]
 
 
-# --- Wait-and-see: solve each scenario in isolation -------------------------
+# Wait-and-see: solve each scenario in isolation.
 def wait_and_see(scenario_class: str = "full_closure",
                  target_count: int = 15,
                  chokepoint: str = "CP_HORMUZ",
                  enable_cascade: bool = True,
                  policy_subset: Sequence[str] = ALL_POLICIES,
                  verbose: bool = True) -> float:
-    """
-    Expected cost under perfect information (WS).
+    """Expected cost under perfect information (WS).
 
-    Solve each scenario as its own MIP with the disruption path known in
-    advance (no non-anticipativity), then take the probability-weighted sum.
+    Solve each scenario as its own MIP with the path known in advance (no non-anticipativity), then take the probability-weighted sum.
     """
     network = get_network()
     scenarios = get_scenarios(scenario_class, target_count)
@@ -853,7 +771,7 @@ def wait_and_see(scenario_class: str = "full_closure",
     return ws_value
 
 
-# --- Expected-value problem -------------------------------------------------
+# Expected-value problem.
 def expected_value_problem(scenario_class: str = "full_closure",
                             target_count: int = 15,
                             chokepoint: str = "CP_HORMUZ",
@@ -864,7 +782,7 @@ def expected_value_problem(scenario_class: str = "full_closure",
     """Solve the deterministic problem at the mean availability path. Returns (objective, z_star)."""
     scenarios = get_scenarios(scenario_class, target_count)
 
-    # Probability-weighted mean availability path
+    # Probability-weighted mean availability path.
     n_stages = len(scenarios[0].availability)
     mean_path = [
         sum(s.prob * s.availability[t] for s in scenarios) /
@@ -891,7 +809,6 @@ def expected_value_problem(scenario_class: str = "full_closure",
     if info["objective"] is None:
         return float("nan"), {}
 
-    # Extract z* per (p, t)
     z_star = {}
     for p in policy_subset:
         for t in m.T:
@@ -905,7 +822,7 @@ def expected_value_problem(scenario_class: str = "full_closure",
     return info["objective"], z_star
 
 
-# --- EEV: implement EV plan under stochastic realization --------------------
+# EEV: implement EV plan under stochastic realization.
 def evaluate_ev_plan_stochastic(z_star: Dict[Tuple[str, int], int],
                                   scenario_class: str = "full_closure",
                                   target_count: int = 15,
@@ -924,7 +841,7 @@ def evaluate_ev_plan_stochastic(z_star: Dict[Tuple[str, int], int],
                     unresponsive_regime=class_regime(scenario_class)[1],
                     policy_subset=list(policy_subset))
 
-    # Pin z across every scenario to the EV plan
+    # Pin z across every scenario to the EV plan.
     for p in policy_subset:
         for t in m.T:
             target = z_star.get((p, t), 0)
@@ -941,7 +858,7 @@ def evaluate_ev_plan_stochastic(z_star: Dict[Tuple[str, int], int],
     return info["objective"] if info["objective"] is not None else float("inf")
 
 
-# --- Top-level diagnostics --------------------------------------------------
+# Top-level diagnostics.
 def compute_diagnostics(scenario_classes: Sequence[str] = (
                             "partial_restriction",
                             "full_closure",
@@ -952,21 +869,16 @@ def compute_diagnostics(scenario_classes: Sequence[str] = (
                         enable_cascade: bool = True,
                         policy_subset: Sequence[str] = ALL_POLICIES,
                         verbose: bool = True) -> pd.DataFrame:
-    """
-    EVPI / VSS diagnostics table across scenario classes.
+    """EVPI / VSS diagnostics across scenario classes.
 
-    Columns ($B): RP (stochastic optimum), WS (wait-and-see),
-    EEV (EV plan under realization), EVPI = RP - WS, VSS = EEV - RP,
-    plus each as a percentage of RP.
+    Columns ($B): RP (stochastic optimum), WS (wait-and-see), EEV (EV plan under realization), EVPI = RP - WS, VSS = EEV - RP, each also as % of RP.
     """
     rows = []
     for sc in scenario_classes:
         if verbose:
             print(f"\n=== {sc} ===")
 
-        # RP: full stochastic problem on the exogenous model, so the EVPI/VSS
-        # comparison is internally consistent (WS, EV, EEV are all exogenous).
-        # The separate value of endogenous uncertainty is reported elsewhere.
+        # RP on the exogenous model so the EVPI/VSS comparison is internally consistent (WS, EV, EEV all exogenous). Endogenous-uncertainty value is reported elsewhere.
         rp_m = build_model(
             get_network(), get_scenarios(sc, target_count),
             disrupted_chokepoint=disrupted_chokepoints_for_class(sc, chokepoint),
@@ -1021,9 +933,7 @@ def compute_diagnostics(scenario_classes: Sequence[str] = (
     return pd.DataFrame(rows)
 
 
-# ===================================================================
 # Core loss computation (reduced-form screen)
-# ===================================================================
 def compute_system_losses(
     countries: Dict[str, Country],
     availability: float = 0.0,
@@ -1031,14 +941,9 @@ def compute_system_losses(
     policy_reduction: float = 0.0,
     chokepoint_dep_attr: str = "hormuz_dep",
 ) -> pd.DataFrame:
-    """
-    Per-country economic losses for a disruption scenario and policy level.
+    """Per-country economic losses for a disruption scenario and policy level.
 
-    Parameters
-    ----------
-    availability : Fraction of chokepoint capacity remaining (0 = full closure).
-    policy_reduction : Fractional loss reduction from active policies.
-    chokepoint_dep_attr : Country attribute name for chokepoint dependence.
+    availability: fraction of chokepoint capacity remaining (0 = full closure). policy_reduction: fractional loss reduction from active policies. chokepoint_dep_attr: country attribute name for chokepoint dependence.
     """
     rows = []
     for c in countries.values():
@@ -1072,35 +977,23 @@ def compute_system_losses(
             .reset_index(drop=True))
 
 
-# ===================================================================
 # ESCVI: Energy Supply Chain Vulnerability Index
-# ===================================================================
 def compute_escvi(
     countries: Dict[str, Country],
     chokepoint: str = "hormuz",
 ) -> pd.DataFrame:
-    """
-    Composite vulnerability index over import dependence, reserve vulnerability,
-    alternative supply gap, and cascade severity. Returns a ranked table.
-
-    chokepoint : Chokepoint identifier, used to look up the dependence attribute.
+    """Composite vulnerability index (import dependence, reserve vulnerability, alternative-supply gap, cascade severity), ranked. chokepoint selects the dependence attribute.
     """
     dep_attr = f"{chokepoint}_dep"
     rows = []
 
     for c in countries.values():
-        # Exposure is the total national exposure delta_n = min(1, iota_n * theta_n),
-        # the SAME quantity the optimization uses: import
-        # dependence iota_n times the route share theta_n, capped at one.
+        # National exposure delta_n = min(1, iota_n * theta_n), the same quantity the optimization uses (import dependence times route share, capped at one).
         dep = min(1.0, getattr(c, dep_attr, c.hormuz_dep) * IMPORT_SHARE.get(c.code, 1.0))
 
         import_dep = dep * 100.0
         reserve_vuln = max(0.0, (1.0 - c.spr_days / 90.0)) * 100.0
-        # Alternative-supply gap: the exposed demand net of the alternatives that can
-        # blunt it, renewable penetration and the emergency substitute-supply
-        # capability (product stocks, refinery reallocation, fuel switching, about 5%
-        # of demand), rather than renewable share alone. Reserve
-        # buffering is captured by the separate reserve-vulnerability component.
+        # Alternative-supply gap: exposed demand net of the alternatives that blunt it (renewable penetration plus the ~5%-of-demand substitute capability: product stocks, refinery reallocation, fuel switching). Reserve buffering is captured separately.
         alt_capability = c.renew_pct / 100.0 + SUBSTITUTE_ALT_FRAC
         alt_gap = max(0.0, 1.0 - alt_capability) * dep * 100.0
 
@@ -1125,9 +1018,6 @@ def compute_escvi(
             .reset_index(drop=True))
 
 
-# ===================================================================
-# Gini coefficient
-# ===================================================================
 def gini_coefficient(values: np.ndarray) -> float:
     """Compute the Gini coefficient of an array of values."""
     values = np.array(values, dtype=float)
@@ -1139,11 +1029,8 @@ def gini_coefficient(values: np.ndarray) -> float:
     return (2.0 * np.sum(index * sorted_v) / (n * np.sum(sorted_v))) - (n + 1) / n
 
 
-# ===================================================================
 # Model variant comparison
-# ===================================================================
-# Cache for variant solves, keyed by
-# (enable_cascade, endogenous, optimized, chokepoint, duration_days).
+# Cache keyed by (enable_cascade, endogenous, optimized, chokepoint, duration_days).
 _variant_solve_cache: Dict[Tuple[bool, bool, bool, str, int], float] = {}
 
 
@@ -1156,13 +1043,9 @@ def _solve_variant_objective(
     scenario_class: str = "full_closure",
     target_count: int = 15,
 ) -> float:
-    """Build and solve one model formulation, returning its expected system
-    loss (USD billion).
+    """Build and solve one model formulation, returning expected system loss (USD billion).
 
-    enable_cascade : include the cross-sector cascade penalty.
-    endogenous : let policy actions shape disruption transition probabilities
-        (action-contingent uncertainty); when False the path is exogenous.
-    optimized : full six-instrument portfolio vs an empty (no-intervention) subset.
+    enable_cascade: include the cascade penalty. endogenous: policy actions shape transition probabilities (action-contingent uncertainty), else exogenous path. optimized: full six-instrument portfolio vs empty subset.
     """
 
     key = (enable_cascade, endogenous, optimized, chokepoint, duration_days)
@@ -1190,8 +1073,7 @@ def _solve_variant_objective(
             f"endogenous={endogenous}, optimized={optimized})"
         )
     obj = float(info["objective"])
-    # MIP objective is USD million, convert to USD billion.
-    obj_billion = obj / 1000.0
+    obj_billion = obj / 1000.0   # USD million to USD billion
     _variant_solve_cache[key] = obj_billion
     return obj_billion
 
@@ -1201,14 +1083,9 @@ def model_variant_comparison(
     chokepoint: str = "CP_HORMUZ",
     duration_days: int = 100,
 ) -> pd.DataFrame:
-    """Compare expected system losses with and without the cross-sector cascade
-    module, to isolate its value.
+    """Compare expected system losses with and without the cascade module, isolating its value.
 
-    Both rows are the same decision-dependent stochastic program; they differ
-    only in whether the cross-sector cascade penalty is active. With it off,
-    unmet demand is penalized only by the direct linear shortage cost. Both are
-    genuine solves, not rescalings, so the gap measures the value added by
-    modeling cascades, and the optimized figures match the headline results.
+    Both rows are the same stochastic program, differing only in whether the cascade penalty is active (off: unmet demand penalized by direct linear shortage cost only). Both are genuine solves, so the gap measures the value of modeling cascades.
     """
     variants = [
         ("Direct shortage only (no cascade)", False),
@@ -1234,19 +1111,13 @@ def model_variant_comparison(
 
 
 def amplification_pwl_error(m=None) -> pd.DataFrame:
-    """Certified and realized approximation error of the convex PWL under-estimates
-, for BOTH the amplification damage g_s(u) and the world-price
-    deadweight. CERTIFIED is the worst-case relative gap between the true convex
-    function and its max-tangent epigraph over the modeled domain, computed on a
-    dense grid. REALIZED (if a solved model m is given) is the probability-weighted
-    gap at the optimal allocation. Both are one-sided (the epigraph lies below the
-    curve, so the MIP under-counts, never over-counts)."""
+    """PWL under-estimation error for both the amplification damage g_s(u) and the world-price deadweight.
+
+    CERTIFIED is the worst-case relative gap between the true convex function and its max-tangent epigraph on a dense grid. REALIZED (if model m given) is the prob-weighted gap at the optimum. Both one-sided (epigraph below the curve, so the MIP under-counts).
+    """
     grid = np.linspace(0.0, 1.0, 2001)
     rows = []
-    # Relative error is reported over the meaningful damage range (g(u) at least 1% of
-    # g(1)), below that both the damage and the absolute gap are negligible, and the
-    # relative gap degenerates near u=0 where g(u) itself vanishes. The certified
-    # ABSOLUTE gap (a true one-sided under-count bound) is reported alongside.
+    # Relative error reported over the meaningful range (g(u) >= 1% of g(1)); below that damage and gap are negligible and the relative gap degenerates as g(u) vanishes near u=0. Certified absolute gap (a true one-sided under-count bound) reported alongside.
     for s in SECTORS:
         segs = build_pwl_segments(s)
         true = np.array([damage_value(s, u) for u in grid])
@@ -1281,12 +1152,10 @@ def amplification_pwl_error(m=None) -> pd.DataFrame:
 
 
 def _cascade_damage_of_solution(m) -> float:
-    """Cascade damage (USD billion) implied by a solved allocation's shortfalls,
-    recomputed from BETA and the convex damage function g_s(u). Works for a model
-    solved WITHOUT the cascade module (no m.Delta), so a naive allocation can be
-    scored under the true cascade objective. At the cascade model's own optimum the
-    epigraph binds, so this reproduces cost_components["Cascade"] exactly (checked in
-    the preflight). Used by the four-cell cross-evaluation."""
+    """Cascade damage (USD billion) implied by a solved allocation's shortfalls, recomputed from BETA and the convex damage g_s(u).
+
+    Works without the cascade module (no m.Delta), so a naive allocation can be scored under the true objective. At the cascade optimum the epigraph binds, reproducing cost_components["Cascade"]. Used by the four-cell cross-evaluation.
+    """
     pw = realized_scenario_probs(m)
     total = 0.0
     for w in m.OMEGA:
@@ -1315,19 +1184,14 @@ def cascade_cross_evaluation(chokepoint: str = "CP_HORMUZ",
                              scenario_class: str = "full_closure") -> pd.DataFrame:
     """Four-cell cross-evaluation of the cascade module.
 
-    The previous comparison optimized the no-cascade and cascade models separately
-    and read their difference as "loss attributable to cascade", which conflates the
-    direct cascade damage, a different allocation, and different policy choices. Here
-    each model's SOLUTION is scored under BOTH objectives:
+    Each model's SOLUTION is scored under BOTH objectives, avoiding the conflation of a naive-vs-cascade optimum difference:
 
-        A  naive (no-cascade) solution, evaluated without cascade (its own objective)
-        B  naive solution,              evaluated WITH cascade damage
-        C  cascade-aware solution,      evaluated without cascade (direct cost only)
-        D  cascade-aware solution,       evaluated with cascade (its own objective)
+        A  naive solution,   evaluated without cascade (its own objective)
+        B  naive solution,   evaluated WITH cascade damage
+        C  aware solution,   evaluated without cascade (direct cost only)
+        D  aware solution,   evaluated with cascade (its own objective)
 
-    so the effect decomposes into pure cascade damage (B - A), the allocation and
-    policy gain from anticipating it (B - D), and the direct-cost trade-off the
-    aware model accepts to reduce it (C - A). Reported for both regimes.
+    Decomposes into pure cascade damage (B - A), allocation/policy gain from anticipating it (B - D), and the direct-cost trade-off the aware model accepts (C - A). Both regimes.
     """
     rows = []
     for regime, subset in [("No intervention", []), ("Optimized", list(ALL_POLICIES))]:
@@ -1340,9 +1204,7 @@ def cascade_cross_evaluation(chokepoint: str = "CP_HORMUZ",
         m_c = solve(subset, scenario_class=scenario_class, chokepoint=chokepoint,
                     duration_days=duration_days, enable_cascade=True, cache=False)
         cc = cost_components(m_c)
-        # C and D score the aware allocation with the SAME true damage g(u) used for
-        # B, so the three derived quantities are internally consistent (the model's
-        # linearized Delta differs from g(u) only by the small PWL gap).
+        # C and D score the aware allocation with the same true damage g(u) used for B, so the derived quantities are consistent (linearized Delta differs from g(u) only by the small PWL gap).
         C = cc["Total"] - cc["Cascade"]
         D = C + _cascade_damage_of_solution(m_c)
         del m_c
@@ -1365,8 +1227,7 @@ def cascade_cross_evaluation(chokepoint: str = "CP_HORMUZ",
 _DEP_ATTR_BY_CP = {"CP_HORMUZ": "hormuz_dep", "CP_MALACCA": "malacca_dep",
                    "CP_SUEZ": "suez_dep"}
 
-# Regional blocs for the cooperative-game cost-sharing. Any
-# importer not listed falls into "Rest". Members are matched by country code.
+# Regional blocs for cooperative-game cost-sharing, matched by country code; unlisted importers fall into "Rest".
 REGIONAL_BLOCS = {
     "East Asia": ["CHN", "JPN", "KOR", "TWN", "HKG"],
     "South Asia": ["IND", "PAK", "BGD", "LKA", "NPL"],
@@ -1386,17 +1247,10 @@ def _bloc_of(code: str) -> str:
 
 
 def _price_channel_terms(m):
-    """Physical price-channel deadweight and terms-of-trade transfer (USD billion),
-    evaluated on the PHYSICAL residual price_loss_phys, which nets
-    out EVERY importer's realized conservation, not only the coordinating set's. A managed
-    reduction physically lowers world demand regardless of who chose it, so the reported
-    market outcome must reflect all realized reductions; the model's incentive residual
-    price_loss (coordinating set only) is what the objective credits and is what
-    distinguishes a price-taker from a coordinator, but it is not the physical price. For
-    the planner (coordinating set = all importers) the two residuals coincide, so the
-    headline is unchanged. The deadweight is read off the same piecewise-linear envelope
-    the objective uses, evaluated at the physical residual, so it matches the objective
-    convention exactly where the residuals coincide."""
+    """Physical price-channel deadweight and terms-of-trade transfer (USD billion), on the physical residual price_loss_phys.
+
+    price_loss_phys nets out every importer's realized conservation (a managed reduction lowers world demand regardless of who chose it), unlike the objective's incentive residual price_loss (coordinating set only) that distinguishes price-taker from coordinator. For the planner the two coincide. Deadweight read off the same PWL envelope the objective uses.
+    """
     pw = realized_scenario_probs(m)
     ws = float(WORLD_OIL_SUPPLY_MBD * STAGE_DAYS)
     bp = list(getattr(m, "_dwl_bp", []))
@@ -1421,10 +1275,8 @@ def _price_channel_terms(m):
 
 
 def _coordination_bundle(m) -> Dict[str, float]:
-    """Welfare bundle for the decentralization analysis: real-resource efficiency loss,
-    the terms-of-trade transfer importers pay producers, the importer-coalition welfare
-    (efficiency + transfer, the monopsony-relevant measure), and the coalition's total
-    priced response cost (curtailment + reserve + substitute)."""
+    """Welfare bundle for the decentralization analysis: real-resource efficiency loss, terms-of-trade transfer to producers, importer-coalition welfare (efficiency + transfer, the monopsony-relevant measure), and priced response cost (curtailment + reserve + substitute).
+    """
     cc = cost_components(m)
     dwl, transfer = _price_channel_terms(m)
     efficiency = cc["Total"] - cc["Oil price"] + dwl
@@ -1436,9 +1288,8 @@ def _coordination_bundle(m) -> Dict[str, float]:
 
 
 def _bloc_response_costs(m) -> Dict[str, float]:
-    """Per-bloc priced response outlays (curtailment + reserve + substitute, $B)
-    from a solved model, aggregated over member countries. Used for the cost-sharing
-    transfer table."""
+    """Per-bloc priced response outlays (curtailment + reserve + substitute, $B) from a solved model, for the cost-sharing transfer table.
+    """
     pw = realized_scenario_probs(m)
     has_g = hasattr(m, "g_ps")
     out: Dict[str, float] = {}
@@ -1460,11 +1311,10 @@ def _bloc_response_costs(m) -> Dict[str, float]:
 
 
 def _realized_bloc_shares(m) -> Dict[str, float]:
-    """Realized consumption incidence by bloc: the probability-
-    weighted served consumption of each bloc as a share of the world total, read from a
-    solved model. Used as the incidence base for the price benefit in place of baseline
-    demand shares, so the price benefit is attributed on the crude importers actually
-    clear after the disruption rather than on pre-disruption consumption."""
+    """Realized consumption incidence by bloc: prob-weighted served consumption as a share of the world total.
+
+    Incidence base for the price benefit in place of baseline demand shares, so the benefit is attributed on crude actually cleared after the disruption, not pre-disruption consumption.
+    """
     pw = realized_scenario_probs(m)
     cons: Dict[str, float] = {}
     for n in m.C:
@@ -1480,13 +1330,10 @@ def coalition_transfer_table(shapley: Dict[str, float],
                              chokepoint: str = "CP_HORMUZ", duration_days: int = 100,
                              scenario_class: str = "full_closure",
                              target_count: int = 30) -> pd.DataFrame:
-    """Budget-balanced cost-sharing table. For each bloc:
-    the gross price benefit it receives (its consumption share of the world-price
-    cost the coalition saves), the extra response cost its own conservation adds
-    under coordination (grand minus noncoop), the resulting raw net, the Shapley
-    allocation, and the side transfer reconciling the two. Transfers sum to zero and
-    the net allocations sum to the grand-coalition value, so the mechanism is
-    budget-balanced. Needs the Shapley allocations from ``coalition_cost_sharing``."""
+    """Budget-balanced cost-sharing table.
+
+    Per bloc: gross price benefit (its consumption share of the world-price cost saved), extra response cost its conservation adds under coordination (grand minus noncoop), raw net, Shapley allocation, and the reconciling side transfer. Transfers sum to zero and net allocations sum to v(N). Needs the Shapley allocations from coalition_cost_sharing.
+    """
     net = get_network()
     scen = get_scenarios(scenario_class, target_count)
     disr = disrupted_chokepoints_for_class(scenario_class, chokepoint)
@@ -1510,12 +1357,7 @@ def coalition_transfer_table(shapley: Dict[str, float],
     real_share = _realized_bloc_shares(m_nc)   # realized incidence
     share = {b: real_share.get(b, base_share[b]) for b in blocs}
 
-    # Total real resource cost of coordination, W'_increase = DT_saved - v(N). This
-    # exceeds the priced response outlays because it also includes the efficiency
-    # distortion from holding the price down. Attributed by consumption share so the
-    # gross-benefit-minus-cost raw net sums to v(N) and the transfers net to zero
-    # (budget balance). The priced per-bloc outlays are kept
-    # as a memo for the replication data.
+    # Total real resource cost of coordination W'_increase = DT_saved - v(N); exceeds priced outlays by the efficiency distortion of holding the price down. Attributed by consumption share so raw net sums to v(N) and transfers net to zero. Priced outlays kept as a memo.
     coord_cost_total = dt_saved - sum(shapley.values())
     rows = []
     for b in blocs:
@@ -1541,14 +1383,10 @@ def coalition_transfer_table(shapley: Dict[str, float],
 def coordination_analysis(chokepoint: str = "CP_HORMUZ", duration_days: int = 100,
                           scenario_class: str = "full_closure",
                           target_count: int = 15) -> pd.DataFrame:
-    """Value of coordination: the planner (all importers internalize that their
-    aggregate demand restraint moderates the world price) versus
-    the noncooperative price-taking benchmark (no importer internalizes its price
-    impact). Reports both the importer-coalition (monopsony) gain,
-    Total + transfer, and its decomposition into the terms-of-trade transfer saved
-    from producers and the global-efficiency effect. Coordination is privately
-    valuable to importers even where its global-efficiency component is small or
-    slightly negative, the classic buyer-monopsony result."""
+    """Value of coordination: planner (importers internalize that aggregate restraint moderates the world price) versus the noncooperative price-taking benchmark.
+
+    Reports the importer-coalition (monopsony) gain, Total + transfer, decomposed into the terms-of-trade transfer saved from producers and the global-efficiency effect. Coordination is privately valuable to importers even where the efficiency component is small or slightly negative (the buyer-monopsony result).
+    """
     net = get_network()
     scen = get_scenarios(scenario_class, target_count)
     disr = disrupted_chokepoints_for_class(scenario_class, chokepoint)
@@ -1592,18 +1430,10 @@ def coalition_cost_sharing(chokepoint: str = "CP_HORMUZ", duration_days: int = 1
                            scenario_class: str = "full_closure",
                            target_count: int = 9, price_curve: str = "linear",
                            mip_gap: float = 1e-3, time_limit: int = 600) -> pd.DataFrame:
-    """Cooperative-game cost-sharing of the coordination gain across regional blocs
-. The value a coalition S can secure for itself is
-        v(S) = share_S * (DT_noncoop - DT_S) - (Wprime_S - Wprime_noncoop),
-    where DT is the world-price cost (deadweight + transfer) and Wprime is the real
-    resource loss excluding that deadweight, so the grand-coalition value equals the
-    planner-versus-lower-bound importer-welfare gain exactly.
-    share_S is S's consumption share, and only S coordinates its response (non-S
-    free-ride on the moderated price). Reports each bloc's Shapley allocation of the
-    grand-coalition gain v(N), tests individual rationality (phi_i >= v({i})), and
-    checks core stability (no coalition S improves on its Shapley sum). The leakage of
-    the price benefit to free-riders makes small coalitions unprofitable, which is why
-    the monopsony is under-provided without full coordination."""
+    """Cooperative-game cost-sharing of the coordination gain across regional blocs.
+
+    Coalition value v(S) = share_S * (DT_noncoop - DT_S) - (Wprime_S - Wprime_noncoop), where DT is the world-price cost (deadweight + transfer) and Wprime is the real resource loss excluding it, so v(N) equals the planner-vs-lower-bound importer-welfare gain. Only S coordinates (non-S free-ride on the moderated price). Reports each bloc's Shapley allocation of v(N), individual rationality (phi_i >= v({i})), and core stability. Price-benefit leakage to free-riders makes small coalitions unprofitable, so the monopsony is under-provided without full coordination.
+    """
     net = get_network()
     scen = get_scenarios(scenario_class, target_count)
     disr = disrupted_chokepoints_for_class(scenario_class, chokepoint)
@@ -1635,16 +1465,10 @@ def coalition_cost_sharing(chokepoint: str = "CP_HORMUZ", duration_days: int = 1
         return (b, sh) if want_shares else b
 
     nc, real_share = _solve([], want_shares=True)   # grand price-taking lower-bound baseline
-    # Realized consumption incidence: attribute the price benefit
-    # on the crude each bloc actually clears after the disruption, not on baseline demand.
+    # Realized incidence: attribute the price benefit on crude each bloc actually clears, not baseline demand.
     share = {b: real_share.get(b, base_share[b]) for b in blocs}
     dt_nc = nc["dt"]
-    # Real resource loss excluding the shared price deadweight (shortage +
-    # amplification + transport + response outlays). A coalition bears the full
-    # increase in this term from its own conservation, while it captures only its
-    # consumption share of the price benefit (deadweight + transfer). Defined so the
-    # grand coalition's value equals the planner-versus-lower-bound importer-welfare
-    # gain exactly: v(N) = (dt_nc - dt_N) - (Wprime_N - Wprime_nc).
+    # Real resource loss excluding the shared price deadweight (shortage + amplification + transport + response). A coalition bears its full increase from its own conservation but captures only its consumption share of the price benefit. Defined so v(N) = (dt_nc - dt_N) - (Wprime_N - Wprime_nc).
     wprime_nc = nc["efficiency"] - nc["deadweight"]
 
     value_fn: Dict[Tuple[str, ...], float] = {(): 0.0}
@@ -1655,11 +1479,7 @@ def coalition_cost_sharing(chokepoint: str = "CP_HORMUZ", duration_days: int = 1
             share_S = sum(share[x] for x in S)
             wprime_S = b["efficiency"] - b["deadweight"]
             v_raw = share_S * (dt_nc - b["dt"]) - (wprime_S - wprime_nc)
-            # Normalized game: a coalition of any size can decline
-            # to coordinate and secure zero, so v_+(S) = max{0, v(S)} for EVERY coalition,
-            # not only singletons. The grand coalition's value is positive, so it is
-            # unaffected, small unprofitable coalitions are floored at their zero outside
-            # option before the Shapley allocation and core check.
+            # Normalized game: any coalition can decline to coordinate and secure zero, so v_+(S) = max{0, v(S)} for every S (not only singletons). v(N) is positive so it is unaffected; unprofitable coalitions floored at their zero outside option before Shapley and core.
             v = max(0.0, v_raw)
             value_fn[tuple(sorted(S))] = v
             print(f"  v({'+'.join(S)}) = {v:.2f}B  (raw {v_raw:.2f})", flush=True)
@@ -1669,30 +1489,19 @@ def coalition_cost_sharing(chokepoint: str = "CP_HORMUZ", duration_days: int = 1
     rows = []
     for b in blocs:
         solo = value_fn[(b,)]
-        # Individual rationality against the outside option max{0, v({i})}: a bloc can always decline to coordinate and secure zero,
-        # so a negative stand-alone value does not lower the participation threshold.
+        # Individual rationality against the outside option max{0, v({i})}: a negative stand-alone value does not lower the participation threshold.
         rows.append({"Bloc": b, "Consumption share (%)": round(100 * share[b], 1),
                      "Shapley allocation ($B)": round(phi[b], 2),
                      "Stand-alone v({i}) ($B)": round(solo, 2),
                      "Individually rational": phi[b] >= max(0.0, solo) - 1e-6})
-    # Core check. The Shapley allocation lies in the core iff its excess
-    # sum(phi_S) - v(S) is non-negative for every coalition S. The grand-coalition
-    # excess is zero by efficiency and uninformative, so we report the minimum excess
-    # over the PROPER coalitions and the coalition attaining it;
-    # strictly positive proper slack places the allocation in the relative interior.
+    # Core check: the allocation is in the core iff excess sum(phi_S) - v(S) >= 0 for every S. Grand-coalition excess is zero by efficiency, so report the minimum over proper coalitions; strictly positive proper slack places the allocation in the relative interior.
     all_excess = {S: sum(phi[b] for b in S) - value_fn[tuple(sorted(S))]
                   for r in range(1, len(blocs) + 1) for S in combinations(blocs, r)}
     core_ok = min(all_excess.values()) >= -1e-6
     proper = {S: e for S, e in all_excess.items() if len(S) < len(blocs)}
     worst_S = min(proper, key=proper.get)
     min_proper_excess = proper[worst_S]
-    # Certification of the core result. Every coalition problem is
-    # solved to a relative optimality gap of at most mip_gap, so each world-price cost
-    # of scale |dt_nc| carries an absolute objective uncertainty of about
-    # max_gap * |dt_nc|. v(S), the Shapley values, and the core excess are all linear
-    # in objective-scale quantities of this magnitude, so we report this as a
-    # transparent numerical-uncertainty scale and flag the minimum proper-coalition
-    # excess as certified strictly positive only when it exceeds it comfortably.
+    # Certification: each coalition solves to relative gap <= mip_gap, so a world-price cost of scale |dt_nc| carries objective uncertainty ~ max_gap * |dt_nc|. v(S), Shapley, and excess are linear in these, so flag min proper excess as certified positive only when it comfortably exceeds that scale.
     max_gap = max(solve_gaps) if solve_gaps else float("nan")
     obj_uncertainty = max_gap * abs(dt_nc) if solve_gaps else float("nan")
     certified_positive = bool(min_proper_excess > 10.0 * obj_uncertainty) if solve_gaps else False
@@ -1716,10 +1525,8 @@ def coalition_cost_sharing(chokepoint: str = "CP_HORMUZ", duration_days: int = 1
 
 
 def exposure_disclosure(chokepoint: str = "CP_HORMUZ") -> pd.DataFrame:
-    """Per-country import dependence iota_n, chokepoint route share theta_n, and the
-    resulting exposure delta_n = min(1, iota_n * theta_n), so the
-    national results can be reconstructed from the paper. Reads calibration data and
-    IMPORT_SHARE; no solve."""
+    """Per-country import dependence iota_n, route share theta_n, and exposure delta_n = min(1, iota_n * theta_n), so national results can be reconstructed. Reads calibration data and IMPORT_SHARE; no solve.
+    """
     net = get_network()
     attr = _DEP_ATTR_BY_CP.get(chokepoint, "hormuz_dep")
     rows = []
@@ -1737,11 +1544,8 @@ def exposure_disclosure(chokepoint: str = "CP_HORMUZ") -> pd.DataFrame:
 
 
 def normal_state_reconciliation(chokepoint: str = "CP_HORMUZ") -> pd.DataFrame:
-    """Normal-state material balance: total importer demand
-    partitioned into the always-available non-exposed supply and the chokepoint-
-    exposed imports, which are mutually exclusive and sum to demand, alongside the
-    global source capacity, the passage throughput, and off-strait spare capacity as
-    memo lines. Rates in mbd. Reads calibration data and the network; no solve."""
+    """Normal-state material balance: total importer demand split into always-available non-exposed supply and chokepoint-exposed imports (mutually exclusive, summing to demand), with global source capacity, passage throughput, and off-strait spare capacity as memos. Rates in mbd; no solve.
+    """
     net = get_network()
     attr = _DEP_ATTR_BY_CP.get(chokepoint, "hormuz_dep")
     tot_demand = sum(c.daily_oil_mbd for c in net.countries.values())
@@ -1768,15 +1572,8 @@ def normal_state_reconciliation(chokepoint: str = "CP_HORMUZ") -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# ======================================================================
-# FIGURES: publication charts and the chokepoint map
-# ======================================================================
-"""
-Publication figures: result charts and the chokepoint world map.
+# FIGURES: matplotlib/cartopy publication charts driven by the result tables, plus the standalone chokepoint map.
 
-Matplotlib/cartopy figure builders driven by the solved-MIP result tables in
-`results` plus the standalone chokepoint map.
-"""
 import os
 from typing import Dict, Optional
 
@@ -1790,8 +1587,7 @@ from matplotlib.path import Path as MplPath
 
 
 
-# Approximate national centroid coordinates (lon, lat) for the 53 importers, used
-# only to place bubbles on the map. Values are conventional country centroids.
+# Conventional national centroids (lon, lat) for the 53 importers, only to place map bubbles.
 COUNTRY_LONLAT: Dict[str, tuple] = {
     "JPN": (138.2, 36.2), "KOR": (127.8, 36.5), "IND": (79.0, 22.0),
     "CHN": (104.0, 35.0), "SGP": (103.8, 1.35), "THA": (101.0, 15.0),
@@ -1819,9 +1615,7 @@ REGION_COLOR = {
 }
 
 
-# ---------------------------------------------------------------------------
 # Data export (read straight from the solved MIP)
-# ---------------------------------------------------------------------------
 def export_country_losses(output_dir: str = "outputs",
                           target_count: int = 15) -> pd.DataFrame:
     """All-53 per-country inaction vs proactive expected loss with coordinates."""
@@ -1868,9 +1662,7 @@ def export_optimized_flows(output_dir: str = "outputs",
                            target_count: int = 15) -> pd.DataFrame:
     """Expected optimized arc flow (mbd), aggregated by echelon transition.
 
-    Builds the link list for a layered Sankey: source regions -> chokepoints and
-    bypass corridors -> processing hubs -> importing regions. Flow on each arc is
-    the probability-weighted, stage-averaged optimized flow from the solved MIP.
+    Link list for a layered Sankey (source regions -> chokepoints/bypass -> processing hubs -> importing regions); each arc flow is the prob-weighted, stage-averaged optimized flow.
     """
     import pyomo.environ as pyo
     net = get_network()
@@ -1880,9 +1672,7 @@ def export_optimized_flows(output_dir: str = "outputs",
     n_stages = len(m.T)
     pw = realized_scenario_probs(m)
 
-    # Flow variable x is a per-stage volume (mbd x stage-days). Convert to an
-    # average throughput rate in mbd: prob-weight over scenarios, sum the stage
-    # volumes, and divide by the horizon length (n_stages x STAGE_DAYS).
+    # x is a per-stage volume (mbd x stage-days); convert to an average rate in mbd by prob-weighting, summing stage volumes, and dividing by the horizon (n_stages x STAGE_DAYS).
     horizon_days = n_stages * STAGE_DAYS
     arc_flow = {}
     for aid in m.A:
@@ -1917,9 +1707,7 @@ def export_optimized_flows(output_dir: str = "outputs",
     return df
 
 
-# ---------------------------------------------------------------------------
 # Figure 1: country loss map
-# ---------------------------------------------------------------------------
 def _iso3(att):
     """Robust ISO3 code from a Natural Earth country record's attributes."""
     for key in ("ISO_A3", "ISO_A3_EH", "ADM0_A3", "SOV_A3"):
@@ -1934,12 +1722,7 @@ def make_country_loss_map(df: Optional[pd.DataFrame] = None,
                           metric: str = "Inaction ($B)") -> str:
     """Choropleth world map of national expected economic loss under inaction.
 
-    Importing countries are filled by the loss they bear on a clean light
-    basemap, in the style of recent maritime-chokepoint impact maps (Verschuur
-    et al., 2025). Non-importing land is neutral grey and the disrupted
-    chokepoint is marked. Rendered with Cartopy + matplotlib (Natural Earth
-    admin_0 polygons keyed on ISO-3 codes), exported straight to vector PDF; a
-    plain scatter is used only if Cartopy is unavailable.
+    Importers filled by loss on a light basemap, styled after recent maritime-chokepoint impact maps (Verschuur et al., 2025). Cartopy + matplotlib (Natural Earth admin_0 polygons keyed on ISO-3), vector PDF; falls back to a plain scatter if Cartopy is unavailable.
     """
     import matplotlib.colors as mcolors
     if df is None:
@@ -1954,8 +1737,7 @@ def make_country_loss_map(df: Optional[pd.DataFrame] = None,
     except Exception:
         return _loss_map_fallback(d, metric, output_dir)
 
-    # PowerNorm spread (gamma<1) keeps the long tail of mid-sized importers
-    # distinguishable from the few very large ones.
+    # PowerNorm (gamma<1) keeps mid-sized importers distinguishable from the few very large ones.
     cmap = plt.cm.YlOrRd
     norm = mcolors.PowerNorm(gamma=0.45, vmin=0.0, vmax=vmax)
     OCEAN, NODATA, BORDER = "#EAF1F6", "#E8E8E8", "#FFFFFF"
@@ -1990,8 +1772,7 @@ def make_country_loss_map(df: Optional[pd.DataFrame] = None,
                 ha="right", va="top",
                 path_effects=[pe.withStroke(linewidth=2.2, foreground="white")])
 
-    # label the larger importers, greedily skipping overlaps so dense clusters
-    # (e.g. western Europe) stay legible, colour for contrast against the fill
+    # Label larger importers, greedily skipping overlaps so dense clusters stay legible; color for contrast against the fill.
     placed = []
     for _, r in d.sort_values(metric, ascending=False).iterrows():
         if r["Code"] not in COUNTRY_LONLAT or len(placed) >= 10:
@@ -2008,8 +1789,7 @@ def make_country_loss_map(df: Optional[pd.DataFrame] = None,
 
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
-    # Tick at the true maximum (labelled with the worst value), since round(vmax)
-    # could exceed vmax and be clipped off the bar.
+    # Tick at the true maximum, since round(vmax) could exceed vmax and be clipped off the bar.
     small = [t for t in (1, 3, 5, 10, 20, 40, 70) if t < 0.9 * vmax]
     cb = fig.colorbar(sm, ax=ax, orientation="horizontal", fraction=0.04,
                       pad=0.02, aspect=42, ticks=small + [vmax])
@@ -2028,7 +1808,7 @@ def make_country_loss_map(df: Optional[pd.DataFrame] = None,
 
 
 def _loss_map_fallback(d, metric, output_dir):
-    """Minimal scatter fallback if Plotly is unavailable (keeps the call safe)."""
+    """Minimal scatter fallback if Cartopy is unavailable."""
     import matplotlib.colors as mcolors
     norm = mcolors.PowerNorm(gamma=0.45, vmin=0.0, vmax=float(d[metric].max()))
     fig, ax = plt.subplots(figsize=(12.6, 6.6))
@@ -2047,9 +1827,7 @@ def _loss_map_fallback(d, metric, output_dir):
     return path
 
 
-# ---------------------------------------------------------------------------
 # Figure 2: optimized-flow Sankey (pure matplotlib)
-# ---------------------------------------------------------------------------
 def _ribbon(ax, x0, y0a, y0b, x1, y1a, y1b, color, alpha=0.55):
     """Draw a smooth flow ribbon between two vertical spans."""
     xm = (x0 + x1) / 2.0
@@ -2085,13 +1863,9 @@ def _disp(code):
 
 def make_flow_sankey(df: Optional[pd.DataFrame] = None,
                      output_dir: str = "outputs") -> str:
-    """Clean matplotlib Sankey of optimized crude oil flows under the proactive
-    response: source regions -> chokepoints -> refining hubs -> importing regions.
+    """Matplotlib Sankey of optimized crude oil flows under the proactive response: source regions -> chokepoints -> refining hubs -> importing regions.
 
-    Layer-coloured node bars, smooth flow ribbons coloured by route type, and
-    labels placed under their own column header (sources to the left of their
-    bar, importers to the right, the two middle columns centred on the bar with a
-    white backing box). Exported straight to vector PDF, no browser engine.
+    Layer-colored node bars, ribbons colored by route type, labels under their column header (sources left, importers right, middle columns centered). Vector PDF, no browser engine.
     """
     if df is None:
         df = export_optimized_flows(output_dir)
@@ -2102,9 +1876,7 @@ def make_flow_sankey(df: Optional[pd.DataFrame] = None,
                    "processing": "#59A14F", "importer": "#7E6BA8"}
     KIND_COLOR = {"main": "#5B86B0", "bypass": "#E0A458", "sharing": "#6FB1A6"}
 
-    # Collapse the many negligible nodes in a layer into a single "Other ..."
-    # node, so each column is a short, readable stack rather than a congested
-    # pile of overlapping labels. The dominant flows are left intact.
+    # Collapse negligible nodes in a layer into one "Other ..." node so each column is a short readable stack; dominant flows are left intact.
     df = df.copy()
     for layer, thresh, newcode in (("source", 0.25, "OTHERSRC"),
                                    ("processing", 0.50, "OTHERPROC")):
@@ -2138,9 +1910,7 @@ def make_flow_sankey(df: Optional[pd.DataFrame] = None,
     for l in LAYERS:
         by_layer[l].sort(key=lambda n: -size[n])
 
-    # Vertical layout: each node gets a slot whose height is floored so tiny
-    # nodes still get room for a label, the bar itself is drawn at the true flow
-    # height, centred in the slot, so ribbon widths stay proportional.
+    # Vertical layout: each node's slot height is floored so tiny nodes still fit a label, but the bar is drawn at the true flow height so ribbon widths stay proportional.
     GAP = 0.55
     slot, center = {}, {}
     for l in LAYERS:
@@ -2221,7 +1991,7 @@ def make_flow_sankey(df: Optional[pd.DataFrame] = None,
     return path
 
 
-# ---- EIA-style palette ----
+# EIA-style palette
 GOLD = "#F2A900"        # chokepoint bubble fill
 GOLD_EDGE = "#C8860C"   # bubble outline
 ARROW = "#8C2E2E"       # crude oil flow arrows (dark red)
@@ -2276,7 +2046,7 @@ def generate_chokepoint_map(output_dir: str = "outputs") -> str:
             pass
     ax.axis("off")
 
-    # ---- Principal crude oil sea lanes (waypoints kept over open water) ----
+    # Principal crude oil sea lanes (waypoints kept over open water).
     routes = [
         ([(56.5, 26.8), (59.5, 24), (63, 16), (72, 7.5), (82, 5),
           (92, 4.5), (100.5, 2.8)], 2.6),
@@ -2309,7 +2079,7 @@ def generate_chokepoint_map(output_dir: str = "outputs") -> str:
                     arrowprops=dict(arrowstyle="-|>", color=ARROW, lw=w,
                                     mutation_scale=16), zorder=5)
 
-    # ---- Chokepoint bubbles: (lon, lat, throughput mbd, dx, dy, ha, va) ----
+    # Chokepoint bubbles: (lon, lat, throughput mbd, dx, dy, ha, va).
     chokepoints = {
         "Strait of Hormuz":  (56.5, 26.8, 20.9,   0,  32, "center", "bottom"),
         "Strait of Malacca": (100.5, 3.0, 23.2,   0, -24, "center", "top"),
@@ -2345,28 +2115,16 @@ if __name__ == "__main__":
     generate_chokepoint_map()
 
 
-# ======================================================================
-# VALIDATION: correctness invariants
-# ======================================================================
-"""Correctness invariants for the multi-stage stochastic model.
-
-Each check re-derives a property from a fresh solve rather than trusting a
-stored value, and reports PASS/FAIL. Run as a module to verify the model after
-any change to the formulation, the price channel, or the decision-dependent
-uncertainty logic:
-
-    python code/analysis.py          # runs run_all()
-
-Invariants checked:
-  1. Decision-dependent linearization is exact: at de-escalation strength zero
-     the endogenous-probability objective equals the exogenous solve.
-  2. Realized scenario probabilities form a distribution (sum to one).
-  3. Rerouted escape flow never exceeds the disrupted chokepoint's physical
-     bypass capacity.
-  4. A full closure produces a strictly positive expected oil-price cost, so the
-     world-price channel is active.
-  5. The objective decomposition reconciles to the solved objective.
-"""
+# VALIDATION: correctness invariants for the multi-stage stochastic model.
+#
+# Each check re-derives a property from a fresh solve and reports PASS/FAIL; run
+# `python code/analysis.py` to verify after any formulation change. Invariants:
+#   1. DDU linearization exact: at de-escalation strength zero the endogenous
+#      objective equals the exogenous solve.
+#   2. Realized scenario probabilities sum to one.
+#   3. Rerouted escape flow never exceeds the disrupted chokepoint's bypass capacity.
+#   4. A full closure yields a strictly positive oil-price cost (channel active).
+#   5. The objective decomposition reconciles to the solved objective.
 
 import gc
 
@@ -2451,9 +2209,7 @@ def check_cost_reconciles():
 
 
 def check_cmax_margin():
-    """The per-scenario cost stays well below the McCormick bound Cmax, so the
-    linearization is exact with margin (a tight Cmax could silently distort or
-    infeasibly cap the recourse)."""
+    """Per-scenario cost stays below the McCormick bound Cmax with margin (a tight Cmax could silently distort or infeasibly cap the recourse)."""
     m = _solve(ALL_POLICIES, "full_closure")
     if not getattr(m, "ddu_active", False):
         return True, "n/a (DDU inactive)"
@@ -2487,11 +2243,8 @@ def run_all():
     return all_ok
 
 
-# ======================================================================
 # STANDALONE PUBLICATION FIGURES (read locked outputs/*.csv)
-# ======================================================================
-# Publication styling for the three descriptive figures, applied only within a
-# rc_context so it does not leak into the notebook's serif style.
+# Styling for the descriptive figures, applied only within an rc_context so it does not leak into the notebook's serif style.
 _PUB_RC = {
     "font.family": "Arial", "font.size": 11,
     "axes.linewidth": 0.8, "axes.edgecolor": "#3A3A3A",
@@ -2740,23 +2493,13 @@ if __name__ == "__main__":
     sys.exit(0 if run_all() else 1)
 
 
-# ==========================================================================
-# Sensitivity and robustness checks
-# ==========================================================================
-"""Robustness and sensitivity checks for the maritime chokepoint model.
-
-Each function perturbs one calibrated input, re-solves the headline 100-day
-Strait of Hormuz closure, and reports the effect on the objective and on the
-optimal policy set. One function maps to one calibration claim in the paper:
-
-    cascade_beta_robustness  ->  appendix cascade section: the beta intensity
-                                 (matrix scaled +/-20% around the 2.58 anchor)
-    policy_cost_robustness   ->  appendix policy section: the activation costs
-                                 (every cost scaled by a common 0.5-2.0 factor)
-
-Every perturbation restores the baseline calibration on exit. Depends only on
-model (the optimization stack).
-"""
+# SENSITIVITY AND ROBUSTNESS CHECKS.
+#
+# Each function perturbs one calibrated input, re-solves the headline 100-day
+# Hormuz closure, and reports the effect on the objective and optimal policy set,
+# restoring the baseline on exit. Depends only on model. Key mappings:
+#   cascade_beta_robustness -> beta intensity (+/-20% around the 2.58 anchor)
+#   policy_cost_robustness  -> activation costs (common 0.5-2.0 factor)
 
 import gc
 from copy import deepcopy
@@ -2773,20 +2516,11 @@ from model import (build_model, solve_model, get_network, get_scenarios,
                         ALL_POLICIES, POLICIES, _detect_solver)
 
 
-# ---------------------------------------------------------------------------
 # Cascade weights: first-order vs full Leontief inverse (no solve)
-# ---------------------------------------------------------------------------
 def cascade_weight_gap():
-    """
-    Quantify how much the single-pass (first-order) cascade weights differ from
-    the total-requirements weights of the full Leontief inverse (I - beta)^{-1}.
+    """First-order (single-pass) cascade weights vs the total-requirements weights of the full Leontief inverse (I - beta)^{-1}.
 
-    The model propagates stress in one pass, u = beta * sigma, rather than through
-    the inverse. This reports, per sector, the first-order row-sum weight, the
-    full-inverse row-sum weight, and their relative gap, plus the spectral radius
-    of beta. It shows that the single pass under-states total indirect stress (a
-    conservative choice) while preserving the ranking of sectors. Reads
-    model.BETA and solves no optimization.
+    The model propagates stress in one pass, u = beta * sigma. Reports per sector the first-order and full-inverse row-sum weights, their relative gap, and the spectral radius of beta, showing the single pass under-states indirect stress (conservative) while preserving sector ranking. Reads model.BETA; no solve.
     """
     S = list(SECTORS)
     n = len(S)
@@ -2812,17 +2546,12 @@ def cascade_weight_gap():
     return df
 
 
-# ---------------------------------------------------------------------------
 # ESCVI ranking stability under weight perturbation (no solve)
-# ---------------------------------------------------------------------------
 def escvi_weight_stability(base_weights=(0.30, 0.30, 0.20, 0.20),
                            jitter=(-0.25, -0.15, 0.0, 0.15, 0.25)):
-    """
-    Test how stable the ESCVI ranking is to its four dimension weights. Each
-    weight is scaled by every combination of the jitter grid (default +/-25%),
-    renormalized, and the ranking recomputed. Reports the minimum and mean
-    Spearman correlation to the baseline ranking and the top-10 and top-12
-    retention. Solves no optimization.
+    """Stability of the ESCVI ranking to its four dimension weights.
+
+    Each weight is scaled by every combination of the jitter grid (default +/-25%), renormalized, and the ranking recomputed. Reports min and mean Spearman correlation to baseline and top-10/top-12 retention. No solve.
     """
     from analysis import compute_escvi
     df = compute_escvi(build_countries())
@@ -2864,12 +2593,9 @@ def escvi_weight_stability(base_weights=(0.30, 0.30, 0.20, 0.20),
     }])
 
 
-# ---------------------------------------------------------------------------
 # Shared helpers
-# ---------------------------------------------------------------------------
 def _hormuz_setup(scenario_class, chokepoint, target_count):
-    """Network, scenarios, disrupted chokepoint, unresponsive regime, and solver
-    for a full-closure Hormuz solve (everything invariant across perturbations)."""
+    """Network, scenarios, disrupted chokepoint, unresponsive regime, and solver for a Hormuz solve (invariant across perturbations)."""
     return (get_network(),
             get_scenarios(scenario_class, target_count),
             disrupted_chokepoints_for_class(scenario_class, chokepoint),
@@ -2884,21 +2610,16 @@ def _active_set(m):
                         for t in m.T for w in m.OMEGA))
 
 
-# ---------------------------------------------------------------------------
 # Logistics realism: derated delivery capacity
-# ---------------------------------------------------------------------------
 def logistics_derating_robustness(factors=(1.0, 0.9, 0.8, 0.7),
                                   chokepoint="CP_HORMUZ",
                                   scenario_class="full_closure",
                                   duration_days=100,
                                   target_count=15):
-    """Re-solve the headline closure with all transport and rerouting arc capacities
-    derated by a common factor, a reduced-form proxy for route lags, vessel-cycle
-    limits, and port congestion. Source-injection arcs are left at
-    nameplate (they set the disruption size, not the delivery logistics). Reports the
-    no-intervention and optimized loss, the saving, and the active policy set at each
-    derating, so the leading conclusions can be checked under tighter logistics.
-    Baseline capacities are restored on exit."""
+    """Re-solve the closure with transport and rerouting arc capacities derated by a common factor (proxy for route lags, vessel-cycle limits, port congestion).
+
+    Source-injection arcs stay at nameplate (they set the disruption size, not delivery logistics). Reports no-intervention and optimized loss, saving, and active set per derating. Baseline restored on exit.
+    """
     network = get_network()
     disrupted = disrupted_chokepoints_for_class(scenario_class, chokepoint)
     unresp = class_regime(scenario_class)[1]
@@ -2944,9 +2665,7 @@ def logistics_derating_robustness(factors=(1.0, 0.9, 0.8, 0.7),
     return pd.DataFrame(rows)
 
 
-# ---------------------------------------------------------------------------
 # Duration under a FIXED decision clock
-# ---------------------------------------------------------------------------
 def _reduce_tree(scenarios, max_paths):
     """Cap a scenario tree at max_paths representative paths (highest probability,
     renormalized), so the model stays within memory as the stage count grows."""
@@ -2964,18 +2683,9 @@ def duration_fixed_stage_robustness(stage_counts=(4, 5),
                                     scenario_class="full_closure",
                                     stage_days=25,
                                     max_paths=27):
-    """Re-solve the closure with a FIXED 25-day decision stage and an increasing
-    number of stages, so decision and information frequency are held constant as the
-    horizon lengthens. The headline duration experiment instead
-    keeps four stages and stretches each one, which coarsens the decision clock at
-    long horizons. This function isolates the two effects: for each horizon it reports
-    the fixed-stage saving beside the four-stage coarsened saving at the same total
-    duration, so a stable saving shows the decline reflects buffer exhaustion rather
-    than decision granularity.
+    """Re-solve the closure with a FIXED 25-day stage and increasing stage count, holding decision/information frequency constant as the horizon lengthens.
 
-    The scenario tree grows as 3^(T-1) (T=4,5,6 give 27, 81, 243 paths), so the run
-    is heavier at the long end. NUM_STAGES and the per-stage budget vector are
-    monkeypatched for the fixed-stage solves and restored on exit.
+    The headline experiment instead keeps four stages and stretches each, coarsening the clock at long horizons. Reports fixed-stage saving beside the four-stage coarsened saving at the same duration, so a stable saving shows the decline is buffer exhaustion, not decision granularity. Tree grows as 3^(T-1) (T=4,5,6 give 27, 81, 243 paths). NUM_STAGES and the budget vector are monkeypatched and restored on exit.
     """
     network = get_network()
     disrupted = disrupted_chokepoints_for_class(scenario_class, chokepoint)
@@ -2985,9 +2695,7 @@ def duration_fixed_stage_robustness(stage_counts=(4, 5),
     base_budgets = list(model.STAGE_BUDGETS)
 
     def _solve(scen, n_stages, sd, subset):
-        # Exogenous dynamics, matching the headline duration table and keeping the
-        # larger stage-count trees within memory (the McCormick reformulation of the
-        # endogenous variant would make the 81-path T=5 model exhaust RAM).
+        # Exogenous dynamics, matching the headline duration table and keeping larger trees within memory (the endogenous McCormick variant would make the 81-path T=5 model exhaust RAM).
         m = build_model(network, scen, disrupted_chokepoint=disrupted,
                         stage_days=sd, enable_cascade=True,
                         endogenous_uncertainty=False, unresponsive_regime=unresp,
@@ -3006,12 +2714,7 @@ def duration_fixed_stage_robustness(stage_counts=(4, 5),
         for n in stage_counts:
             duration = n * stage_days
             try:
-                # Fixed 25-day clock: n stages, patch NUM_STAGES and budget vector.
-                # The full tree grows as 3^(T-1), so for higher T we cap it at
-                # max_paths representative paths (highest probability, renormalized) to
-                # keep model size and memory bounded. Both clocks use the same cap, so
-                # the fixed-vs-coarse comparison, which isolates decision granularity,
-                # stays like-for-like.
+                # Fixed 25-day clock, n stages: patch NUM_STAGES and budget vector. The tree grows as 3^(T-1), so cap it at max_paths representative paths for higher T. Both clocks use the same cap so the comparison stays like-for-like.
                 model.NUM_STAGES = n
                 model.STAGE_BUDGETS = (base_budgets + [base_budgets[-1]] * n)[:n]
                 scen_fix = _reduce_tree(generate_full_tree(
@@ -3030,8 +2733,7 @@ def duration_fixed_stage_robustness(stage_counts=(4, 5),
                 c_none, _ = _solve(scen_coarse, base_num_stages, coarse_sd, [])
                 c_opt, _ = _solve(scen_coarse, base_num_stages, coarse_sd, ALL_POLICIES)
             except Exception as exc:  # noqa: BLE001
-                # Any failure (including a Gurobi out-of-memory) skips that point
-                # rather than aborting the sweep.
+                # Any failure (including Gurobi OOM) skips that point rather than aborting the sweep.
                 model.NUM_STAGES = base_num_stages
                 model.STAGE_BUDGETS = list(base_budgets)
                 gc.collect()
@@ -3057,23 +2759,15 @@ def duration_fixed_stage_robustness(stage_counts=(4, 5),
     return pd.DataFrame(rows)
 
 
-# ---------------------------------------------------------------------------
 # Cascade intensity: beta +/- 20%
-# ---------------------------------------------------------------------------
 def cascade_beta_robustness(scales=(0.8, 1.0, 1.2),
                             chokepoint="CP_HORMUZ",
                             duration_days=100,
                             scenario_class="full_closure",
                             target_count=15):
-    """
-    Re-solve the headline Hormuz closure with the inter-sector dependence
-    matrix beta scaled by each factor, testing the calibrated cascade intensity.
-    For every scale it reports the perturbed intensity (sum of beta), the
-    no-intervention and optimized expected loss (cascade on), the resulting
-    saving, and the optimized active policy set, so both the objective and the
-    policy ordering can be checked for stability. Baseline beta is restored on
-    exit. A +/-20% band brackets the calibrated intensity (roughly 2.06 to 3.10
-    around the 2.58 anchor).
+    """Re-solve the Hormuz closure with the inter-sector dependence matrix beta scaled by each factor.
+
+    Reports perturbed intensity (sum of beta), no-intervention and optimized loss, saving, and active set per scale. Baseline beta restored on exit. The +/-20% band brackets the calibrated intensity (~2.06 to 3.10 around the 2.58 anchor).
     """
     base_beta = {s: dict(d) for s, d in model.BETA.items()}
     base_intensity = sum(v for d in base_beta.values() for v in d.values())
@@ -3115,24 +2809,15 @@ def cascade_beta_robustness(scales=(0.8, 1.0, 1.2),
     return pd.DataFrame(rows)
 
 
-# ---------------------------------------------------------------------------
 # Policy activation costs: common factor 0.5 - 2.0
-# ---------------------------------------------------------------------------
 def policy_cost_robustness(factors=(0.5, 0.75, 1.0, 1.5, 2.0),
                            chokepoint="CP_HORMUZ",
                            duration_days=100,
                            scenario_class="full_closure",
                            target_count=15):
-    """
-    Re-solve the optimized Hormuz closure with every policy activation cost
-    scaled by a common factor, testing whether the optimal instrument set is
-    stable to cost revisions.
+    """Re-solve the optimized Hormuz closure with every activation cost scaled by a common factor.
 
-    Reports, per factor, the total bundle cost, the optimized expected loss, the
-    active policy set, and which instruments enter (+) or leave (-) relative to
-    the baseline (factor 1.0, always included). Baseline costs are restored on
-    exit. The per-stage budgets are held fixed, so at high factors an instrument
-    can drop because the budget binds rather than only the objective.
+    Reports per factor the bundle cost, optimized loss, active set, and which instruments enter (+) or leave (-) relative to factor 1.0. Baseline costs restored on exit. Per-stage budgets are fixed, so at high factors an instrument can drop because the budget binds, not only the objective.
     """
     factors = tuple(sorted(set(factors) | {1.0}))
     base_costs = {p.pid: p.cost for p in POLICIES}
@@ -3179,28 +2864,15 @@ def policy_cost_robustness(factors=(0.5, 0.75, 1.0, 1.5, 2.0),
     return pd.DataFrame(rows)
 
 
-# ---------------------------------------------------------------------------
 # Transition-matrix rows: adverse mass +/- delta
-# ---------------------------------------------------------------------------
 def transition_perturbation_robustness(deltas=(-0.10, -0.05, 0.0, 0.05, 0.10),
                                        chokepoint="CP_HORMUZ",
                                        duration_days=100,
                                        scenario_class="full_closure",
                                        target_count=15):
-    """
-    Re-solve the headline Hormuz closure with the disruption transition matrix
-    made more or less adverse, testing whether the saving and the optimal
-    instrument set survive misspecification of the least data-informed block.
+    """Re-solve the Hormuz closure with the disruption transition matrix made more or less adverse, testing the least data-informed block.
 
-    For each level delta, every row of the class's unresponsive matrix has a
-    fraction delta of its recovery mass moved into persistence and escalation
-    (delta > 0 more adverse, delta < 0 more mean-reverting), reallocated by the
-    same rule that builds the responsive matrix so rows stay valid distributions.
-    The responsive matrix is rederived from the perturbed baseline, so both the
-    exogenous and the decision-dependent probabilities move together. Reports the
-    resulting closed-to-closed persistence, the no-intervention and optimized
-    expected loss, the saving, and the optimized active set. Baseline matrices
-    are restored on exit.
+    Per delta, every row of the unresponsive matrix moves a fraction delta of its recovery mass into persistence and escalation (delta > 0 more adverse), reallocated by the responsive-matrix rule so rows stay distributions. The responsive matrix is rederived from the perturbed baseline, so exogenous and decision-dependent probabilities move together. Reports closed-to-closed persistence, no-intervention and optimized loss, saving, and active set. Baseline restored on exit.
     """
     regime = class_regime(scenario_class)[1]
     base = deepcopy(model._TRANSITIONS)
@@ -3221,14 +2893,10 @@ def transition_perturbation_robustness(deltas=(-0.10, -0.05, 0.0, 0.05, 0.10),
     rows = []
     try:
         for d in deltas:
-            # rho = -d in the responsive-matrix rule: d > 0 scales adverse mass
-            # up by (1 + d) and draws the difference from recovery.
+            # rho = -d: d > 0 scales adverse mass up by (1 + d) and draws the difference from recovery.
             model._TRANSITIONS[regime] = responsive_matrix(base[regime],
                                                                 rho=-d)
-            # The stage transition is now built from the continuous-time generator
-            # (C8), which is cached at import, so a perturbation of _TRANSITIONS must
-            # rebuild that regime's generator and drop the memoized stage matrices and
-            # scenario tree for it to take effect.
+            # Stage transitions come from the cached continuous-time generator (C8), so rebuild this regime's generator and drop the memoized stage matrices and scenario tree.
             model._GENERATORS[regime] = model._generator_from_matrix(
                 model._TRANSITIONS[regime])
             model._stage_matrix.cache_clear()
@@ -3260,15 +2928,11 @@ def transition_perturbation_robustness(deltas=(-0.10, -0.05, 0.0, 0.05, 0.10),
     return pd.DataFrame(rows)
 
 
-# ---------------------------------------------------------------------------
 # 27-path loss distribution and CVaR
-# ---------------------------------------------------------------------------
 def _discrete_cvar(costs, probs, alpha):
     """CVaR at level alpha over a discrete loss distribution.
 
-    Sorts scenarios by loss descending and averages the worst (1 - alpha)
-    probability mass, splitting the scenario that straddles the quantile.
-    Returns (VaR_alpha, CVaR_alpha).
+    Averages the worst (1 - alpha) probability mass, splitting the straddling scenario. Returns (VaR_alpha, CVaR_alpha).
     """
     tail = 1.0 - alpha
     order = sorted(costs, key=lambda w: costs[w], reverse=True)
@@ -3290,11 +2954,9 @@ def attrition_ranking_stability(classes=("attrition_mild", "attrition_moderate",
                                 chokepoint="CP_HORMUZ",
                                 duration_days=100,
                                 target_count=15):
-    """
-    Solve the optimized response under each war-of-attrition regime and report
-    the active instrument set, testing whether the instrument ranking is stable
-    under attrition dynamics. Returns one row per class with
-    the no-intervention and optimized loss, the saving, and the active bundle.
+    """Solve the optimized response under each war-of-attrition regime, testing whether the instrument ranking is stable.
+
+    One row per class: no-intervention and optimized loss, saving, and active bundle.
     """
     rows = []
     for cls in classes:
@@ -3335,49 +2997,24 @@ def joint_uncertainty_analysis(n_draws=200,
                                scenario_class="full_closure",
                                target_count=9,
                                seed=42):
-    """
-    Monte-Carlo JOINT sensitivity analysis of the headline Hormuz closure.
+    """Monte-Carlo JOINT sensitivity of the Hormuz closure.
 
-    The one-parameter-at-a-time checks above vary a single calibrated input at a
-    time. This routine instead samples EIGHT inputs jointly, once per draw, and
-    re-solves both the no-intervention and the optimized 100-day full-closure
-    Hormuz case for each draw. It reports the resulting distribution of the loss
-    and the saving with confidence intervals, and the frequency with which each
-    policy is selected across draws. Every perturbed calibration is restored on
-    exit.
+    Samples EIGHT inputs jointly per draw and re-solves the no-intervention and optimized 100-day full-closure case, reporting the loss/saving distribution with CIs and per-policy selection frequency. Every perturbed calibration is restored on exit.
 
-    Per draw the following are sampled with independent draws from a fixed-seed
-    generator (default seed 42), so the whole study is reproducible:
+    Per draw, independent draws from a fixed-seed generator (default 42) for reproducibility:
 
       1. Cascade intensity: every beta entry scaled by Uniform(0.8, 1.2).
       2. Policy activation costs: every p.cost scaled by Uniform(0.5, 2.0).
-      3. Import dependence: every IMPORT_SHARE value scaled by Uniform(0.85,
-         1.15), clamped to [0.05, 1.0].
-      4. Emergency stocks: every country spr_days scaled by Uniform(0.8, 1.2).
-      5. Global spare capacity: GLOBAL_SPARE_CAPACITY_MBD scaled by Uniform(0.5,
-         1.5).
-      6. Oil demand elasticity: OIL_DEMAND_ELASTICITY drawn from Uniform(-0.30,
-         -0.12).
-      7. Transition rates: the class regime matrix perturbed by the same recovery
-         to persistence and escalation reallocation as
-         transition_perturbation_robustness, with the adverse shift drawn from
-         Uniform(-0.10, 0.10).
-      8. Emergency substitute supply: the total capacity fraction
-         SUBSTITUTE_SUPPLY_FRAC scaled by Uniform(0.6, 1.6) (low/base/high roughly
-         3%/5%/8% of demand) and the three per-barrel channel costs
-         (product stock, refinery yield, fuel switch) scaled together by
-         Uniform(0.8, 1.25), so the P6 shares and costs are sampled directly
-         rather than only through its activation cost.
+      3. Import dependence: IMPORT_SHARE scaled by Uniform(0.85, 1.15), clamped to [0.05, 1.0].
+      4. Emergency stocks: spr_days scaled by Uniform(0.8, 1.2).
+      5. Global spare capacity: GLOBAL_SPARE_CAPACITY_MBD scaled by Uniform(0.5, 1.5).
+      6. Oil demand elasticity: OIL_DEMAND_ELASTICITY drawn from Uniform(-0.30, -0.12).
+      7. Transition rates: same reallocation as transition_perturbation_robustness, adverse shift Uniform(-0.10, 0.10).
+      8. Emergency substitute supply: SUBSTITUTE_SUPPLY_FRAC scaled by Uniform(0.6, 1.6) (low/base/high ~3%/5%/8% of demand) and the three per-barrel channel costs scaled together by Uniform(0.8, 1.25), so P6 shares and costs are sampled directly, not only via activation cost.
 
-    All seven knobs are read at build time from the module globals or from the
-    live network object, so each override reaches the solved model. The network
-    and scenarios are built once, and spr_days is perturbed in place on the cached
-    network country objects, so no per-draw network rebuild is needed.
+    Knobs are read at build time from module globals or the live network, so each override reaches the model. Network and scenarios are built once; spr_days is perturbed in place on the cached country objects.
 
-    Returns a pandas DataFrame with one row per completed draw. Summary statistics
-    (mean, median, std, p5, p95) for the no-intervention loss, the optimized loss,
-    and the saving are attached in df.attrs["summary"], and the per-policy
-    selection frequency is attached in df.attrs["policy_frequency"].
+    Returns one row per completed draw. Summary stats (mean, median, std, p5, p95) for the two losses and saving are in df.attrs["summary"]; per-policy selection frequency in df.attrs["policy_frequency"].
     """
     rng = np.random.default_rng(seed)
     regime = class_regime(scenario_class)[1]
@@ -3395,13 +3032,11 @@ def joint_uncertainty_analysis(n_draws=200,
 
     network, scenarios, disrupted, unresp, solver = _hormuz_setup(
         scenario_class, chokepoint, target_count)
-    # spr_days lives on the cached network country objects (read at build time),
-    # so we save the baseline here and perturb in place, restoring on exit.
+    # spr_days lives on the cached country objects, so save the baseline and perturb in place, restoring on exit.
     base_spr = {n: c.spr_days for n, c in network.countries.items()}
 
     def _loss(policy_subset):
-        # get_scenarios is rebuilt per draw because the transition perturbation
-        # clears the scenario cache, matching transition_perturbation_robustness.
+        # get_scenarios rebuilt per draw because the transition perturbation clears the scenario cache.
         m = build_model(network, get_scenarios(scenario_class, target_count),
                         disrupted_chokepoint=disrupted,
                         duration_days=duration_days, enable_cascade=True,
@@ -3443,10 +3078,7 @@ def joint_uncertainty_analysis(n_draws=200,
                 model._TRANSITIONS[regime])
             model._stage_matrix.cache_clear()
             model._scenario_cache.clear()
-            # 8. Emergency substitute supply: total capacity fraction scaled by
-            #    Uniform(0.6, 1.6) (low/base/high approx 3%/5%/8% of demand) and the
-            #    three per-barrel channel costs scaled together by Uniform(0.8, 1.25),
-            #    so the P6 shares and costs are sampled, not only its activation cost.
+            # 8. Emergency substitute supply: SUBSTITUTE_SUPPLY_FRAC scaled by Uniform(0.6, 1.6) (~3%/5%/8% of demand), the three channel costs scaled together by Uniform(0.8, 1.25).
             sc_ss = float(rng.uniform(0.6, 1.6))
             model.SUBSTITUTE_SUPPLY_FRAC = base_ss_frac * sc_ss
             sc_sscost = float(rng.uniform(0.8, 1.25))
@@ -3545,17 +3177,9 @@ def loss_distribution_cvar(chokepoint="CP_HORMUZ",
                            scenario_class="full_closure",
                            target_count=15,
                            alphas=(0.90, 0.95)):
-    """
-    Solve the headline Hormuz closure under no intervention and under the
-    optimized portfolio, then report the distribution of total cost across the
-    enumerated disruption paths rather than the expectation alone.
+    """Solve the Hormuz closure under no intervention and the optimized portfolio, reporting the total-cost distribution across enumerated paths rather than the expectation alone.
 
-    For each regime it evaluates the per-scenario cost expression and the
-    realized path probabilities of the solved model, then reports the
-    probability-weighted mean, standard deviation, minimum, maximum, and the
-    value-at-risk and conditional value-at-risk at each alpha. This exposes the
-    tail that the expected-cost objective averages over. No calibration is
-    changed.
+    Per regime, from the per-scenario cost and realized path probabilities: prob-weighted mean, std, min, max, and VaR/CVaR at each alpha, exposing the tail the expected-cost objective averages over. No calibration changed.
     """
     network, scenarios, disrupted, unresp, solver = _hormuz_setup(
         scenario_class, chokepoint, target_count)

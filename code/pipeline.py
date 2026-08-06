@@ -1,19 +1,13 @@
 """End-to-end reproduction pipeline for GeoEnergy-SCRO.
 
-Runs the full study. It builds the network, solves the stochastic MIP under every
-regime and scenario class, and writes all headline tables and figures into
-outputs/. This is the script form of the original analysis notebook; run it from
-the repository root:
-
-    python code/pipeline.py
-
-A full run takes roughly an hour. Figures are written as vector PDFs (headless).
+Builds the network, solves the stochastic MIP under every regime and scenario
+class, and writes all headline tables and figures to outputs/. Run from the
+repository root: python code/pipeline.py. A full run takes roughly an hour.
 """
 import os
 import sys
 
-# Force UTF-8 stdout so table prints with symbols (checkmarks, x, dashes) do not
-# crash on a Windows cp1252 console. No effect on Linux, which is UTF-8 already.
+# Force UTF-8 stdout so symbol prints do not crash on a Windows cp1252 console.
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
@@ -28,10 +22,6 @@ os.environ.setdefault("GEOENERGY_SOLVER", "appsi_gurobi")
 import matplotlib
 matplotlib.use("Agg")  # headless: savefig works, no GUI needed
 
-
-# ---------------------------------------------------------------------------
-# cell 0
-# ---------------------------------------------------------------------------
 import sys, os, warnings
 from pathlib import Path
 import numpy as np
@@ -45,18 +35,15 @@ warnings.filterwarnings("ignore")
 pd.set_option("display.max_columns", 20)
 pd.set_option("display.width", 120)
 
-# Locate the code/ folder (which holds model.py and analysis.py) and the
-# repository root (which holds data/ and outputs/, one level above code/).
+# Locate code/ (holds model.py, analysis.py) and the repo root (holds data/, outputs/).
 CODE_DIR = Path.cwd().resolve()
 if not (CODE_DIR / "model.py").exists() and (CODE_DIR / "code" / "model.py").exists():
     CODE_DIR = CODE_DIR / "code"          # launched from the repository root
 PROJECT_ROOT = CODE_DIR.parent if (CODE_DIR.parent / "outputs").exists() else CODE_DIR
 if str(CODE_DIR) not in sys.path:
-    sys.path.insert(0, str(CODE_DIR))     # so `import model` / `import analysis` work
+    sys.path.insert(0, str(CODE_DIR))
 os.chdir(PROJECT_ROOT)                     # so "outputs"/"data" resolve at the root
 
-# Optimization stack (config, data, model, solve) and post-solve analysis
-# (results, figures, validation, robustness) as two flat modules.
 from model import (
     SECTORS, NUM_STAGES, STAGE_DAYS, POLICIES, BETA, THRESHOLDS,
     PAL, REGION_COLORS, REGIME_COLORS, SECTOR_COLORS, SEVERITY_COLORS,
@@ -72,7 +59,7 @@ from analysis import (
     generate_chokepoint_map, export_country_losses, make_country_loss_map,
     export_optimized_flows, make_flow_sankey)
 
-# Plot style (EJOR). Font sizes >= 13 so figures stay legible when scaled in LaTeX.
+# EJOR plot style. Font sizes >= 13 stay legible when scaled in LaTeX.
 plt.rcParams.update({
     "font.family": "serif",
     "font.serif": ["Times New Roman", "DejaVu Serif"],
@@ -87,10 +74,6 @@ print(f"Project root: {PROJECT_ROOT}")
 _n = clear_cache()
 print(f"Cleared {_n} cached solves; every result recomputes from the solver.")
 
-# ---------------------------------------------------------------------------
-# cell 1
-# ---------------------------------------------------------------------------
-# Build all network components
 countries, sources, chokepoints, processing, arcs = build_all()
 network = EnergyNetwork(sources, chokepoints, processing, countries, arcs)
 
@@ -99,10 +82,7 @@ print(f"Policy instruments: {len(POLICIES)}")
 print(f"Sectors per country: {len(SECTORS)}")
 print(f"Stage horizon: {NUM_STAGES} stages × {STAGE_DAYS} days = {NUM_STAGES * STAGE_DAYS} days")
 
-# ---------------------------------------------------------------------------
-# cell 2
-# ---------------------------------------------------------------------------
-# Display country calibration data
+# Country calibration table -> outputs/data_countries.csv
 country_df = pd.DataFrame([{
     'Code': c.code, 'Name': c.name, 'Region': c.region,
     'Demand (mbd)': c.daily_oil_mbd,
@@ -116,10 +96,7 @@ display(country_df)
 country_df.to_csv('outputs/data_countries.csv', index=False)
 print(f"\nTotal global demand: {country_df['Demand (mbd)'].sum():.1f} mbd")
 
-# ---------------------------------------------------------------------------
-# cell 3
-# ---------------------------------------------------------------------------
-# Display network arc summary
+# Network arc summary -> outputs/data_arcs.csv
 arc_df = pd.DataFrame([{
     'ID': a.aid, 'Origin': a.origin, 'Destination': a.destination,
     'Capacity (mbd)': round(a.capacity_mbd, 2), 'Unit cost': round(a.unit_cost, 2),
@@ -134,10 +111,6 @@ print(f"Total arcs: {len(arcs)}")
 display(arc_df.head(20))
 arc_df.to_csv('outputs/data_arcs.csv', index=False)
 
-# ---------------------------------------------------------------------------
-# cell 4
-# ---------------------------------------------------------------------------
-# Display chokepoint, source and policy data
 print("Chokepoints:")
 for cp in chokepoints.values():
     print(f"  {cp.name}: {cp.throughput_mbd} mbd throughput, "
@@ -154,11 +127,7 @@ for p in POLICIES:
     irr = " [IRREVERSIBLE]" if p.irreversible else ""
     print(f"  {p.pid} - {p.name}: activation cost ${p.cost}B/stage{irr}")
 
-# ---------------------------------------------------------------------------
-# cell 5
-# ---------------------------------------------------------------------------
-# Geospatial overview: EIA-style world oil transit chokepoint map
-# (Plotly basemap, gold throughput bubbles, dark-red sea-lane arrows, no Cartopy).
+# EIA-style world oil transit chokepoint map.
 try:
     _p = generate_chokepoint_map('outputs')
     print('Saved', _p)
@@ -166,10 +135,7 @@ try:
 except ImportError as _e:
     print(f"[skip] chokepoint map needs cartopy ({_e}); other outputs unaffected.")
 
-# ---------------------------------------------------------------------------
-# cell 6
-# ---------------------------------------------------------------------------
-# Generate the full decision-dependent scenario tree for each disruption class
+# Full decision-dependent scenario tree per disruption class -> outputs/scenarios_*.csv
 disruption_classes = [
     ("partial_restriction", "Partial Restriction"),
     ("full_closure",        "Full Closure"),
@@ -195,11 +161,7 @@ for dc_key, dc_name in disruption_classes:
     } for s in scen])
     sc_df.to_csv(f'outputs/scenarios_{dc_key}.csv', index=False)
 
-# ---------------------------------------------------------------------------
-# cell 7
-# ---------------------------------------------------------------------------
-# Build the Pyomo model to report its size, then free it. The model is large
-# (hundreds of MB), keeping it resident would starve later cells for memory.
+# Build the Pyomo model to report its size, then free it (hundreds of MB resident).
 import gc
 
 scenarios_fc = scenario_sets["full_closure"]
@@ -220,24 +182,17 @@ print("Variable classes:")
 for v in model.component_objects(pyo.Var):
     print(f"  {v.name}: {len(v)} elements")
 
-# Release the model before the figure cells that follow.
 del model
 gc.collect()
 
-# ---------------------------------------------------------------------------
-# cell 8
-# ---------------------------------------------------------------------------
-# Compute ESCVI for all 53 countries (Hormuz scenario)
+# ESCVI for all 53 countries (Hormuz) -> Table 3, outputs/table_escvi.csv
 escvi_df = compute_escvi(countries, "hormuz")
 escvi_df.to_csv('outputs/table_escvi.csv', index=False)
 
 display(Markdown("### Table 3: Top 12 nations ranked by ESCVI (100-day full closure)"))
 display(escvi_df.head(12))
 
-# ---------------------------------------------------------------------------
-# cell 9
-# ---------------------------------------------------------------------------
-# Figure 4: Vulnerability heatmap
+# Figure 4: vulnerability heatmap -> outputs/fig_vulnerability_heatmap.pdf
 top20 = escvi_df.head(20)
 dimensions = ["Import Dep.", "Reserve Vuln.", "Alt. Gap", "Cascade Sev."]
 data = top20[dimensions].values
@@ -261,25 +216,18 @@ plt.tight_layout()
 plt.savefig('outputs/fig_vulnerability_heatmap.pdf')
 plt.show()
 
-# ---------------------------------------------------------------------------
-# cell 10
-# ---------------------------------------------------------------------------
-# Figure 4: Hormuz exposure vs SPR coverage (publication version, reads the
-# calibration inputs in outputs/data_countries.csv, no solver needed).
+# Figure 4: Hormuz exposure vs SPR coverage (reads outputs/data_countries.csv, no solve).
 res.make_exposure_figure()
 plt.show()
 
-# ---------------------------------------------------------------------------
-# cell 11
-# ---------------------------------------------------------------------------
-# Cross-sector cascade decomposition for Pakistan and India
+# Cross-sector cascade decomposition, Pakistan vs India, 100-day horizon.
 pak = countries["PAK"]
 ind = countries["IND"]
 
 cascade_res_pak = compute_cascade_losses(pak, pak.hormuz_dep, 100)
 cascade_res_ind = compute_cascade_losses(ind, ind.hormuz_dep, 100)
 
-# Pakistan decomposition (thin-buffer importer)
+# Pakistan (thin-buffer importer) -> outputs/table_cascade_decomposition.csv
 cascade_rows = []
 for s in SECTORS:
     r = cascade_res_pak[s]
@@ -294,7 +242,7 @@ cascade_df.to_csv('outputs/table_cascade_decomposition.csv', index=False)
 display(Markdown("### Sectoral output loss decomposition - Pakistan (68% Hormuz dep., 12-day SPR)"))
 display(cascade_df)
 
-# India decomposition (deep-buffer importer, for comparison)
+# India (deep-buffer importer) -> outputs/table_cascade_decomposition_india.csv
 cascade_rows_ind = []
 for s in SECTORS:
     r = cascade_res_ind[s]
@@ -309,12 +257,9 @@ cascade_df_ind.to_csv('outputs/table_cascade_decomposition_india.csv', index=Fal
 display(Markdown("### Comparison: India (64% Hormuz dep., 74-day SPR)"))
 display(cascade_df_ind)
 
-# ---------------------------------------------------------------------------
-# cell 12
-# ---------------------------------------------------------------------------
-# Figure: cascade decomposition - two country cases (Pakistan vs India)
-# Bottleneck amplification is zero for both (calibrated stress stays below tau_s),
-# so only the direct and cascade components are shown.
+# Figure: cascade decomposition, Pakistan vs India -> outputs/fig_cascade_stack.pdf.
+# Bottleneck amplification is zero for both (stress stays below tau_s), so only
+# direct and cascade components appear.
 panels = [(cascade_res_pak, "(a) Pakistan"), (cascade_res_ind, "(b) India")]
 fig, axes = plt.subplots(1, 2, figsize=(13, 5.2), sharey=True)
 sectors = [s.capitalize() for s in SECTORS]
@@ -339,10 +284,7 @@ plt.tight_layout()
 plt.savefig("outputs/fig_cascade_stack.pdf", dpi=300)
 plt.show()
 
-# ---------------------------------------------------------------------------
-# cell 13
-# ---------------------------------------------------------------------------
-# Show cascade dependency matrix (β coefficients)
+# Inter-sector cascade dependency matrix (beta coefficients).
 display(Markdown("### Inter-sector cascade dependency matrix (β)"))
 beta_matrix = pd.DataFrame(0.0, index=SECTORS, columns=SECTORS)
 for s in SECTORS:
@@ -352,52 +294,38 @@ for s in SECTORS:
 try:
     display(beta_matrix.style.background_gradient(cmap='YlOrRd', vmin=0, vmax=0.35).format("{:.2f}"))
 except (AttributeError, ImportError):
-    # jinja2 not installed, fall back to plain display
-    display(beta_matrix)
+    display(beta_matrix)  # jinja2 absent, plain display
 
-# Show thresholds
 display(Markdown("### Sector bottleneck thresholds (θ, μ)"))
 for s in SECTORS:
     theta, mu = THRESHOLDS[s]
     print(f"  {s:>15}: θ = {theta:.2f}, μ = {mu:.1f}")
 
-# ---------------------------------------------------------------------------
-# cell 14
-# ---------------------------------------------------------------------------
-# Regional loss decomposition (MIP)
+# Regional loss decomposition (MIP) -> outputs/table_regional_losses_mip.csv
 _f = 'outputs/table_regional_losses_mip.csv'
 reg_df = res.regional_losses()
 reg_df.to_csv(_f, index=False)
 display(Markdown("### Regional expected damage (USD billion, 100-day full Hormuz closure) -- MIP"))
 display(reg_df)
 
-# ---------------------------------------------------------------------------
-# cell 15
-# ---------------------------------------------------------------------------
-# Table 4b: Top 10 countries by absolute loss (MIP)
+# Table 4b: top 10 countries by absolute loss (MIP) -> outputs/table_top_losses_mip.csv
 _f = 'outputs/table_top_losses_mip.csv'
 top_df = res.top_absolute_losses(top_n=10)
 top_df.to_csv(_f, index=False)
 display(Markdown("### Table 4b: Top 10 countries by absolute expected damage (100-day full Hormuz closure) -- MIP"))
 display(top_df[['Country', 'Region', 'Inaction loss ($B)', 'Early-stage loss ($B)', 'Saving ($B)', 'Global share (%)']])
 
-# ---------------------------------------------------------------------------
-# cell 16
-# ---------------------------------------------------------------------------
-# Figure 9 data: efficiency-equity frontiers by scenario severity (MIP), each
-# normalized to its own efficiency-only optimum so the trade-off shapes compare.
+# Figure 9: efficiency-equity frontiers by severity (MIP) -> outputs/data_pareto_frontier_mip.csv.
+# Each normalized to its own efficiency-only optimum so trade-off shapes compare.
 _classes = ['partial_restriction', 'full_closure', 'multi_chokepoint']
 _frames = [res.equity_frontier(scenario_class=_cls).sort_values('Equity weight')
            for _cls in _classes]
 pd.concat(_frames, ignore_index=True).to_csv('outputs/data_pareto_frontier_mip.csv', index=False)
 display(pd.concat(_frames, ignore_index=True))
-res.make_pareto_figure()      # publication version, reads the CSV just written
+res.make_pareto_figure()      # reads the CSV just written
 plt.show()
 
-# ---------------------------------------------------------------------------
-# cell 17
-# ---------------------------------------------------------------------------
-# Table 9: War-of-attrition analysis (MIP)
+# Table 9: war-of-attrition analysis (MIP) -> outputs/table_attrition_mip.csv
 _f = 'outputs/table_attrition_mip.csv'
 attr_df = regime_comparison(
     scenario_classes=("attrition_mild", "attrition_moderate", "attrition_severe"), verbose=False)
@@ -405,38 +333,26 @@ attr_df.to_csv(_f, index=False)
 display(Markdown("### Table 9: War-of-attrition scenario analysis (100-day horizon, USD billion) -- MIP"))
 display(attr_df)
 
-# ---------------------------------------------------------------------------
-# cell 18
-# ---------------------------------------------------------------------------
-# Table 10: Transferability across chokepoints (MIP)
+# Table 10: transferability across chokepoints (MIP) -> outputs/table_transferability_mip.csv
 _f = 'outputs/table_transferability_mip.csv'
 trans_df = res.transferability()
 trans_df.to_csv(_f, index=False)
 display(Markdown("### Table 10: Transferability across primary global chokepoints (100-day full closure) -- MIP"))
 display(trans_df)
 
-# ---------------------------------------------------------------------------
-# cell 19
-# ---------------------------------------------------------------------------
-# Table 11: Model variant comparison
+# Table 11: model variant comparison -> outputs/table_model_variants.csv
 mv_df = model_variant_comparison(countries)
 mv_df.to_csv('outputs/table_model_variants.csv', index=False)
 
 display(Markdown("### Table 11: Estimated losses under simplistic vs. advanced model variants (USD billion)"))
 display(mv_df)
 
-# ---------------------------------------------------------------------------
-# cell 20
-# ---------------------------------------------------------------------------
-# Configuration for the MIP-based analyses below. The full decision-dependent
-# disruption-path tree is always solved, target_count only sets cache-key
-# granularity (6 for a quick check, 15 default, 30 for the final run).
+# Config for the MIP analyses below. Full tree always solved; target_count only
+# sets cache-key granularity (6 quick check, 15 default, 30 final run).
 MIP_TARGET_COUNT = 15
 MIP_SCENARIO_CLASSES = ["partial_restriction", "full_closure", "multi_chokepoint"]
 
-# ---------------------------------------------------------------------------
-# cell 21
-# ---------------------------------------------------------------------------
+# Table 4 (MIP): regime comparison -> outputs/table_scenario_comparison_mip.csv
 _f = 'outputs/table_scenario_comparison_mip.csv'
 df_regime_mip = regime_comparison(scenario_classes=MIP_SCENARIO_CLASSES,
                                   target_count=MIP_TARGET_COUNT, verbose=True)
@@ -444,20 +360,13 @@ df_regime_mip.to_csv(_f, index=False)
 display(Markdown('### Table 4 (MIP-based): regime comparison across scenario classes'))
 display(df_regime_mip)
 
-# ---------------------------------------------------------------------------
-# cell 22
-# ---------------------------------------------------------------------------
-# Figure 8: per-scenario expected loss under no intervention, the reactive
-# bundle, and the early-stage optimum (publication version).
+# Figure 8: per-scenario expected loss under no intervention, reactive bundle,
+# and early-stage optimum.
 res.make_scenario_bars_figure(df_regime_mip)
 plt.show()
 
-# ---------------------------------------------------------------------------
-# cell 23
-# ---------------------------------------------------------------------------
-# Figure: loss composition (model output)
-#   (a) total loss by sector across representative importers
-#   (b) per-stage loss by country over the 100-day horizon
+# Figure -> outputs/fig_sector_country_stack.pdf: (a) total loss by sector across
+# representative importers, (b) per-stage loss by country over the 100-day horizon.
 REPS = [('CHN', 'China'), ('IND', 'India'), ('JPN', 'Japan'),
         ('KOR', 'S. Korea'), ('PAK', 'Pakistan'), ('DEU', 'Germany')]
 sector_color = SECTOR_COLORS
@@ -520,9 +429,7 @@ plt.show()
 
 import gc; del m0; gc.collect()
 
-# ---------------------------------------------------------------------------
-# cell 24
-# ---------------------------------------------------------------------------
+# Policy attribution (MIP, 64 subset solves) -> outputs/table_policy_attribution_mip.csv
 _f = 'outputs/table_policy_attribution_mip.csv'
 df_attribution = attribution_table(scenario_class='full_closure',
                                    target_count=MIP_TARGET_COUNT, verbose=True)
@@ -530,10 +437,7 @@ df_attribution.to_csv(_f, index=False)
 display(Markdown('### Consolidated policy attribution (MIP, 64 subset solves)'))
 display(df_attribution)
 
-# ---------------------------------------------------------------------------
-# cell 25
-# ---------------------------------------------------------------------------
-# Figure: Side-by-side Shapley and LOO bars (excludes Total row)
+# Figure: Shapley vs LOO bars -> outputs/fig_policy_attribution_mip.pdf (excludes Total row).
 df_plot = df_attribution.iloc[:-1].copy()
 df_plot = df_plot.sort_values('Shapley ($B)', ascending=True)
 
@@ -562,9 +466,7 @@ plt.tight_layout()
 plt.savefig('outputs/fig_policy_attribution_mip.pdf')
 plt.show()
 
-# ---------------------------------------------------------------------------
-# cell 26
-# ---------------------------------------------------------------------------
+# Cost of delaying activation by stage (MIP) -> outputs/table_timing_delay_mip.csv
 _f = 'outputs/table_timing_delay_mip.csv'
 df_timing_mip = timing_delay_mip(scenario_class='full_closure',
                                  target_count=MIP_TARGET_COUNT, verbose=True)
@@ -572,10 +474,7 @@ df_timing_mip.to_csv(_f, index=False)
 display(Markdown('### Cost of delaying activation by stage (MIP)'))
 display(df_timing_mip)
 
-# ---------------------------------------------------------------------------
-# cell 27
-# ---------------------------------------------------------------------------
-# Figure: timing-delay curve
+# Figure: timing-delay curve -> outputs/fig_timing_delay_mip.pdf
 fig, ax = plt.subplots(figsize=(9, 5))
 ax.plot(df_timing_mip['Delay (days)'],
         df_timing_mip['Expected loss ($B)'],
@@ -593,9 +492,7 @@ plt.tight_layout()
 plt.savefig('outputs/fig_timing_delay_mip.pdf')
 plt.show()
 
-# ---------------------------------------------------------------------------
-# cell 28
-# ---------------------------------------------------------------------------
+# Duration sensitivity (MIP) -> outputs/table_duration_sensitivity_mip.csv
 _f = 'outputs/table_duration_sensitivity_mip.csv'
 df_duration_mip = duration_sensitivity_mip(durations=[40, 80, 100, 200, 300, 365],
                                            scenario_class='full_closure',
@@ -604,10 +501,7 @@ df_duration_mip.to_csv(_f, index=False)
 display(Markdown('### Duration sensitivity from the MIP'))
 display(df_duration_mip)
 
-# ---------------------------------------------------------------------------
-# cell 29
-# ---------------------------------------------------------------------------
-# Figure: duration-sensitivity curves
+# Figure: duration-sensitivity curves -> outputs/fig_duration_sensitivity_mip.pdf
 fig, ax = plt.subplots(figsize=(9.5, 5.5))
 ax.plot(df_duration_mip['Duration (days)'], df_duration_mip['No intervention'],
         marker='s', color=REGIME_COLORS['No intervention'], linewidth=2, label='No intervention')
@@ -622,67 +516,44 @@ plt.tight_layout()
 plt.savefig('outputs/fig_duration_sensitivity_mip.pdf')
 plt.show()
 
-# ---------------------------------------------------------------------------
-# cell 30
-# ---------------------------------------------------------------------------
-# Cascade-coefficient robustness: beta scaled +/-20% around the calibration.
+# Cascade-coefficient robustness, beta +/-20% -> outputs/table_cascade_robustness.csv
 beta_robust = rob.cascade_beta_robustness(scales=[0.8, 1.0, 1.2])
 beta_robust.to_csv('outputs/table_cascade_robustness.csv', index=False)
 display(Markdown('### Cascade coefficient robustness (beta +/- 20%)'))
 display(beta_robust)
 
-# ---------------------------------------------------------------------------
-# cell 31
-# ---------------------------------------------------------------------------
-# Policy-cost robustness: every activation cost scaled by a common factor.
+# Policy-cost robustness, activation costs scaled 0.5-2.0x -> outputs/table_policy_cost_robustness.csv
 policy_robust = rob.policy_cost_robustness(factors=[0.5, 0.75, 1.0, 1.5, 2.0])
 policy_robust.to_csv('outputs/table_policy_cost_robustness.csv', index=False)
 display(Markdown('### Policy-cost robustness (activation costs 0.5-2.0x)'))
 display(policy_robust)
 
-# ---------------------------------------------------------------------------
-# cell 32
-# ---------------------------------------------------------------------------
-# Transition-row perturbation: make every row of the disruption
-# transition matrix uniformly more or less adverse, sweeping the closed-to-closed
-# persistence around its baseline, and re-solve. Tests whether the saving and the
-# active bundle survive misspecification of the least data-informed block.
+# Transition-row perturbation -> outputs/table_transition_robustness.csv. Sweeps
+# closed-to-closed persistence +/-0.10 to test whether the saving and active bundle
+# survive misspecification of the least data-informed transition block.
 transition_robust = rob.transition_perturbation_robustness(
     deltas=(-0.10, 0.0, 0.10), target_count=MIP_TARGET_COUNT)
 transition_robust.to_csv('outputs/table_transition_robustness.csv', index=False)
 display(Markdown('### Transition-row perturbation (full-closure Hormuz)'))
 display(transition_robust)
 
-# ---------------------------------------------------------------------------
-# cell 33
-# ---------------------------------------------------------------------------
-# 27-path loss distribution and CVaR: solve the full-closure Hormuz
-# case under no intervention and under the optimized portfolio, then report the
-# spread of total cost across the enumerated paths (mean, std, min, max, and CVaR
-# at 90% and 95%) rather than the expectation alone. Feeds Table 8.
+# Table 8: 27-path loss distribution and CVaR (90%, 95%) for full-closure Hormuz,
+# no intervention vs optimized portfolio -> outputs/table_loss_distribution.csv
 loss_dist = rob.loss_distribution_cvar(target_count=MIP_TARGET_COUNT)
 loss_dist.to_csv('outputs/table_loss_distribution.csv', index=False)
 display(Markdown('### 27-path loss distribution and tail risk (CVaR)'))
 display(loss_dist)
 
-# ---------------------------------------------------------------------------
-# cell 34
-# ---------------------------------------------------------------------------
-# Instrument ranking under attrition: solve the optimized response
-# under the mild, moderate, and severe war-of-attrition regimes and report the
-# active bundle, confirming the ranking is stable under attrition dynamics.
+# Instrument ranking under mild/moderate/severe attrition -> outputs/table_attrition_ranking.csv.
+# Confirms the active-bundle ranking is stable under attrition dynamics.
 attrition_rank = rob.attrition_ranking_stability(target_count=MIP_TARGET_COUNT)
 attrition_rank.to_csv('outputs/table_attrition_ranking.csv', index=False)
 display(Markdown('### Instrument ranking under attrition dynamics'))
 display(attrition_rank)
 
-# ---------------------------------------------------------------------------
-# cell 35
-# ---------------------------------------------------------------------------
-# Cascade weights, first-order vs full Leontief inverse (item N5): quantify how
-# far the single-pass stress weights sit below the total-requirements weights of
-# (I - beta)^{-1}. Confirms the single pass is a conservative lower bound while
-# the sector ranking is preserved. No solve.
+# Cascade weights, first-order vs full Leontief inverse (I - beta)^-1 ->
+# outputs/table_cascade_weight_gap.csv. Single pass is a conservative lower bound
+# and preserves the sector ranking. No solve.
 cascade_gap = rob.cascade_weight_gap()
 cascade_gap.to_csv('outputs/table_cascade_weight_gap.csv', index=False)
 display(Markdown(f"### Cascade weights: first-order vs Leontief inverse "
@@ -690,20 +561,14 @@ display(Markdown(f"### Cascade weights: first-order vs Leontief inverse "
                  f"max relative row-sum gap {cascade_gap.attrs['max_relative_gap_pct']}%)"))
 display(cascade_gap)
 
-# ---------------------------------------------------------------------------
-# cell 36
-# ---------------------------------------------------------------------------
-# ESCVI ranking stability under weight perturbation: perturb all four
-# ESCVI dimension weights by +/-25% over a 625-point grid and report the rank
-# correlation to the baseline and the top-10 / top-12 retention. No solve.
+# ESCVI ranking stability, four weights perturbed +/-25% over a 625-point grid ->
+# outputs/table_escvi_stability.csv. Rank correlation and top-10/top-12 retention. No solve.
 escvi_stab = rob.escvi_weight_stability()
 escvi_stab.to_csv('outputs/table_escvi_stability.csv', index=False)
 display(Markdown('### ESCVI ranking stability under +/-25% weight perturbation'))
 display(escvi_stab)
 
-# ---------------------------------------------------------------------------
-# cell 37
-# ---------------------------------------------------------------------------
+# Stochastic-programming diagnostics (MIP) -> outputs/table_stochastic_diagnostics.csv
 _f = 'outputs/table_stochastic_diagnostics.csv'
 df_diag = compute_diagnostics(scenario_classes=MIP_SCENARIO_CLASSES,
                               target_count=MIP_TARGET_COUNT, verbose=True)
@@ -711,10 +576,7 @@ df_diag.to_csv(_f, index=False)
 display(Markdown('### Stochastic-programming diagnostics (MIP)'))
 display(df_diag)
 
-# ---------------------------------------------------------------------------
-# cell 38
-# ---------------------------------------------------------------------------
-# Headline figure 1: national economic-loss choropleth (model-derived)
+# Headline figure 1: national economic-loss choropleth (model-derived).
 df_country_loss = export_country_losses('outputs')
 _t = df_country_loss.iloc[0]
 print(f"National losses exported for {len(df_country_loss)} importers; "
@@ -727,10 +589,7 @@ try:
 except ImportError as _e:
     print(f"[skip] country-loss map needs cartopy ({_e}); other outputs unaffected.")
 
-# ---------------------------------------------------------------------------
-# cell 39
-# ---------------------------------------------------------------------------
-# Headline figure 2: optimized crude oil flow Sankey under the proactive response
+# Headline figure 2: optimized crude oil flow Sankey under the proactive response.
 df_flows = export_optimized_flows('outputs')
 print(f'{len(df_flows)} flow links; total importer inflow '
       f"{df_flows[df_flows.dst_layer=='importer'].flow_mbd.sum():.1f} mbd")
@@ -739,14 +598,9 @@ _p = make_flow_sankey(df_flows, 'outputs')
 print('Saved', _p)
 display(Image(_p.replace('.pdf', '.png')))
 
-# ---------------------------------------------------------------------------
-# cell 40
-# ---------------------------------------------------------------------------
-# Cost decomposition: every objective channel, term by term (including the
-# maritime freight / war-risk premium and priced demand curtailment). The
-# proactive response barely touches the oil-price term, which is set by the
-# physical supply loss and remains the dominant residual cost. Coordination
-# instead closes the direct shortage.
+# Cost decomposition, every objective channel term by term -> outputs/table_cost_decomposition.csv.
+# Proactive response barely moves the oil-price term (set by physical supply loss,
+# the dominant residual) and instead closes the direct shortage.
 rows = []
 for lbl, sub in [('No intervention', ()), ('Proactive', ('P1','P2','P3','P4','P5','P6'))]:
     c = res.cost_components(res.solve(sub, cache=False)); c['Regime'] = lbl; rows.append(c)
@@ -754,11 +608,8 @@ df_decomp = pd.DataFrame(rows).set_index('Regime')[['Transport','Policy','Direct
 df_decomp.to_csv('outputs/table_cost_decomposition.csv')
 display(df_decomp)
 
-# ---------------------------------------------------------------------------
-# cell 41
-# ---------------------------------------------------------------------------
-# No-disruption benchmark: with the chokepoint open the disruption cost is ~0,
-# so every reported figure is a clean delta from undisrupted operations.
+# No-disruption benchmark: chokepoint open gives ~0 disruption cost, so every
+# reported figure is a clean delta from undisrupted operations.
 m_normal  = res.solve((), scenario_class='no_disruption', cache=False)
 m_closure = res.solve((), scenario_class='full_closure',  cache=False)
 print(f'Normal operations (no disruption): ${m_normal._objective_value/1e3:,.1f}B')
@@ -767,10 +618,7 @@ print(f'Disruption-attributable cost:      ${(m_closure._objective_value-m_norma
 
 import gc; del m_normal, m_closure; gc.collect()
 
-# ---------------------------------------------------------------------------
-# cell 42
-# ---------------------------------------------------------------------------
-# List all generated outputs
+# Inventory all generated outputs.
 import glob
 
 files = sorted(glob.glob('outputs/*'))

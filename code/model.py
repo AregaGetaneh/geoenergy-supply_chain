@@ -1,40 +1,30 @@
 """Optimization stack for the maritime chokepoint model.
 
-Config, supply-chain network data, the decision-dependent stochastic MILP, and
-the cached MIP solve wrapper in one module. Results, figures, and validation
-live in analysis.py.
+Config, supply-chain network data, the decision-dependent stochastic MILP, and the cached
+MIP solve wrapper in one module. Results, figures, and validation live in analysis.py.
 """
 from __future__ import annotations
 
 
-# ======================================================================
 # CONFIG: constants and calibration
-# ======================================================================
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional, Iterable
 from functools import lru_cache
 import numpy as np
 from scipy.linalg import logm, expm
 
-# ---------------------------------------------------------------------------
-# Time horizon
-# ---------------------------------------------------------------------------
 NUM_STAGES = 4                       # T = {0,1,2,3}
-STAGE_DAYS = 25                      # each stage = 25 days
+STAGE_DAYS = 25                      # days per stage
 HORIZON_DAYS = NUM_STAGES * STAGE_DAYS  # 100 days
 
-# ---------------------------------------------------------------------------
-# Sectors
-# ---------------------------------------------------------------------------
 SECTORS: List[str] = [
     "electricity", "industry", "agriculture",
     "transport", "residential", "healthcare",
 ]
 
-# Inter-sector cascade coefficients beta_{ss'}: dependence of sector s on energy
-# supplier s'. From the WIOD 2016 tables (Timmer et al., 2015), supplier side
-# restricted to energy-carrying industries, averaged over 15 major economies and
-# rescaled to the calibrated overall intensity. See experiments.py build-cascade.
+# beta_{ss'}: sector s dependence on energy supplier s'. WIOD 2016 energy industries
+# (Timmer et al. 2015), averaged over 15 major economies, rescaled to calibrated
+# intensity. See experiments.py build-cascade.
 BETA: Dict[str, Dict[str, float]] = {
     "electricity":  {"industry": 0.27, "transport": 0.17},
     "industry":     {"electricity": 0.13, "transport": 0.21},
@@ -44,10 +34,9 @@ BETA: Dict[str, Dict[str, float]] = {
     "healthcare":   {"electricity": 0.16, "industry": 0.06, "transport": 0.27},
 }
 
-# Damage-function (tau, mu) per sector for g_s(u) = mu*u^2 + mu*max(0, u-tau)^2.
-# tau is the stress level where damage accelerates, lowest for tight critical
-# sectors (healthcare 0.25, electricity 0.30), highest for substitutable ones
-# (residential 0.50). mu is the curvature.
+# Damage-function (tau, mu) per sector for g_s(u) = mu*u^2 + mu*max(0, u-tau)^2. tau is
+# the stress level where damage accelerates (lowest for tight critical sectors, highest
+# for substitutable ones). mu is the curvature.
 THRESHOLDS: Dict[str, Tuple[float, float]] = {
     "electricity":  (0.30, 3.5),
     "industry":     (0.40, 2.8),
@@ -57,24 +46,20 @@ THRESHOLDS: Dict[str, Tuple[float, float]] = {
     "healthcare":   (0.25, 5.0),
 }
 
-# PWL breakpoints for epigraph reformulation. The tangent points are concentrated
-# near u=0 because the optimized allocation drives sectoral stress into the small-u
-# regime, where a uniform grid would leave the nearest tangent (at u_mid=0.1) far
-# below g(u) and let the epigraph under-count amplification. The
-# concentrated grid keeps the convex under-approximation tight there. See
-# PWL_BREAKPOINTS and the certified/realized approximation error in
-# analysis.amplification_pwl_error.
+# PWL breakpoints for the epigraph reformulation, concentrated near u=0 where the optimum
+# drives stress, so the convex under-approximation stays tight there (a uniform grid would
+# under-count amplification). Error certified in analysis.amplification_pwl_error.
 PWL_BREAKPOINTS = [0.0, 0.015, 0.035, 0.06, 0.1, 0.16, 0.25, 0.37, 0.52, 0.7, 0.85, 1.0]
 NUM_PWL_SEGMENTS = len(PWL_BREAKPOINTS) - 1
 
 
 def _damage_norm(sector: str) -> float:
-    """Normalization constant g_s(1) = mu + mu*(1-tau)^2, the raw damage at full
-    inoperability. Dividing g_s by it makes the inoperability index
-    Delta = g_s(u)/g_s(1) lie in [0,1]. The same constant is
-    used as the sector damage intensity eta_s = g_s(1) in the objective, so the
-    amplification loss eta_s * VA * Delta = VA * g_s(u) is unchanged. eta_s exceeds
-    one for critical sectors, whose failure costs more than their own value added."""
+    """Normalization g_s(1) = mu + mu*(1-tau)^2, raw damage at full inoperability.
+
+    Dividing g_s by it makes the inoperability index Delta = g_s(u)/g_s(1) lie in [0,1].
+    Also serves as the damage intensity eta_s = g_s(1), so eta_s * VA * Delta = VA * g_s(u).
+    eta_s exceeds one for critical sectors whose failure costs more than their value added.
+    """
     tau, mu = THRESHOLDS[sector]
     return mu + mu * (1.0 - tau) ** 2
 
@@ -82,9 +67,9 @@ def _damage_norm(sector: str) -> float:
 def damage_value(sector: str, u: float) -> float:
     """Normalized convex sector damage g_s(u) = [mu*u^2 + mu*max(0, u-tau)^2]/g_s(1).
 
-    A second quadratic steepens the curve above tau (bottleneck regime). Convex
-    and nondecreasing on u>=0, so its epigraph is the exact max of tangent lines.
-    Normalized so g_s(0)=0 and g_s(1)=1, preserving the sector-specific shape.
+    The second quadratic steepens the curve above tau (bottleneck regime). Convex and
+    nondecreasing on u>=0, so its epigraph is the exact max of tangent lines. g_s(0)=0,
+    g_s(1)=1.
     """
     tau, mu = THRESHOLDS[sector]
     over = max(0.0, u - tau)
@@ -98,10 +83,8 @@ def damage_slope(sector: str, u: float) -> float:
 
 
 def build_pwl_segments(sector: str):
-    """Tangent lines (slope alpha, intercept b) to g_s at the midpoints of the
-    PWL_BREAKPOINTS intervals on [0, 1]. Their max is the convex epigraph used in
-    the MIP. The grid is concentrated near u=0 so the epigraph stays tight in the
-    small-stress regime the optimum occupies."""
+    """Tangent lines (slope alpha, intercept b) to g_s at PWL_BREAKPOINTS interval
+    midpoints. Their max is the convex epigraph used in the MIP."""
     segments = []
     breakpoints = PWL_BREAKPOINTS
     for i in range(len(breakpoints) - 1):
@@ -112,16 +95,12 @@ def build_pwl_segments(sector: str):
     return segments
 
 
-# ---------------------------------------------------------------------------
-# Policy instruments
-# ---------------------------------------------------------------------------
 @dataclass
 class PolicyInstrument:
     """A single policy instrument.
 
-    Effects are modelled structurally through the constraints each policy gates,
-    not through any reduced-form multiplier, so only the activation ``cost`` and
-    the ``irreversible`` flag are carried here.
+    Effects act structurally through the constraints each policy gates, not a reduced-form
+    multiplier, so only the activation ``cost`` and ``irreversible`` flag are carried here.
     """
 
     pid: str
@@ -141,58 +120,44 @@ POLICIES: List[PolicyInstrument] = [
 
 POLICY_DICT = {p.pid: p for p in POLICIES}
 
-# Stage-wise policy-activation budget caps B_t ($B): ceiling on total activation
-# cost sum_p gamma_p z_pt per stage. Rise across the horizon (20 -> 40) and start
-# below the full-bundle cost (5+8+2+15+3+1 = 34 $B) so the planner phases
-# instruments in. Costs are far below the damages averted, so the optimal bundle
-# is insensitive to these caps. MODELLING ASSUMPTION, not a data calibration.
+# Stage-wise activation budget caps B_t ($B) on sum_p gamma_p z_pt. Rise 20 -> 40 and
+# start below the full-bundle cost (34 $B) so the planner phases instruments in. Optimal
+# bundle is insensitive to these caps. Modelling assumption, not a data calibration.
 STAGE_BUDGETS = [20.0, 30.0, 35.0, 40.0]
 
-# ---------------------------------------------------------------------------
-# Sectoral economic calibration. Values match the paper appendix tables.
-# ---------------------------------------------------------------------------
-# Direct-shortage penalty pi_ns ($/bbl unmet): first-round end-use value of a
-# delivered barrel, ~150 $/bbl (EIA refined-product value, net of tax) times a
-# substitutability factor in [0.67, 2.0]. Excludes the oil-price and cascade
-# effects (carried by the dP and eta terms), so channels do not double-count
-# (Rose 2004).
+# Sectoral economic calibration, matching the paper appendix tables.
+# Direct-shortage penalty pi_ns ($/bbl unmet): first-round end-use value of a delivered
+# barrel, ~150 $/bbl (EIA refined-product value net of tax) times a substitutability factor
+# in [0.67, 2.0]. Excludes oil-price and cascade effects (the dP and eta terms) to avoid
+# double-counting (Rose 2004).
 SHORTAGE_PENALTY = {
     "electricity": 250.0, "industry": 150.0, "agriculture": 200.0,
     "transport": 120.0, "residential": 100.0, "healthcare": 300.0,
 }
 
-# Cascade penalty eta_ns ($/unit amplified damage Delta). Same ordering as pi_ns
-# but below it, so a directly delivered barrel always beats second-round relief.
-# (Legacy weight, retained for reference, the amplification loss is now built on an
-# explicit dollar base, see AMP_MULTIPLIER below.)
+# Cascade penalty eta_ns ($/unit amplified damage Delta). Same ordering as pi_ns but below
+# it, so a directly delivered barrel beats second-round relief. Legacy weight kept for
+# reference. The amplification loss now uses an explicit dollar base (below).
 CASCADE_WEIGHT = {
     "electricity": 200.0, "industry": 110.0, "agriculture": 160.0,
     "transport": 90.0, "residential": 75.0, "healthcare": 250.0,
 }
 
-# Within-country amplification base = sector VALUE-ADDED. The
-# amplification loss of a country-sector is L_nst = phi * VA_ns * g_s(u_nst), where
-# VA_ns = GDP_n * VA_SHARE_s is the sector's value added (an observable dollar base,
-# decoupled from its oil demand so that a small-oil, high-criticality sector such as
-# healthcare still carries real weight) and phi is the fraction of that value added
-# lost at full oil stress (g_s=1). g_s already carries the sector-specific curvature
-# and threshold, so a single phi suffices. This replaces the earlier oil-expenditure
-# base, which under-weighted critical low-oil sectors once the demand shares were made
-# transport-dominant.
-VA_SHARE = {   # sector share of GDP (value-added), national-accounts orders of magnitude
+# Amplification base = sector value added. Loss L_nst = phi * VA_ns * g_s(u_nst), with
+# VA_ns = GDP_n * VA_SHARE_s (an observable dollar base decoupled from oil demand, so a
+# small-oil, high-criticality sector such as healthcare still carries weight) and phi the
+# fraction lost at full stress (g_s=1). Replaces the earlier oil-expenditure base.
+VA_SHARE = {   # sector share of GDP (value-added), national-accounts magnitudes
     "electricity": 0.025, "industry": 0.18, "agriculture": 0.05,
     "transport": 0.06, "residential": 0.10, "healthcare": 0.09,
 }
 VA_LOSS_FRAC = 1.0    # eta: at full inoperability (g_s=1) a sector loses its stage
                       # value added, so the amplification loss is VA_nst * g_s(u).
 
-# Import dependence: share of a country's crude oil demand met by imports rather than
-# domestic production. National chokepoint exposure is the product
-# of this import dependence and the share of imports routed through the disrupted
-# passage, so a producer such as China or Brazil is not treated as fully exposed on
-# its whole demand. Pure importers default to 1.0, only economies with material
-# domestic output are listed. Values are approximate net-import shares of consumption
-# from EIA/IEA country balances and are calibration inputs, not estimated quantities.
+# Import dependence: share of crude oil demand met by imports. Chokepoint exposure is this
+# times the share of imports routed through the disrupted passage, so a producer such as
+# China or Brazil is not fully exposed on its whole demand. Pure importers default to 1.0.
+# Approximate net-import shares from EIA/IEA country balances (calibration inputs).
 IMPORT_SHARE: Dict[str, float] = {
     "CHN": 0.72, "IND": 0.85, "IDN": 0.65, "MYS": 0.60, "VNM": 0.60,
     "EGY": 0.55, "THA": 0.85, "BRA": 0.25, "COL": 0.20, "ARG": 0.30,
@@ -206,105 +171,77 @@ MAX_DEMAND_RED = {
     "transport": 0.12, "residential": 0.20, "healthcare": 0.02,
 }
 
-# Split of managed demand reduction into genuine efficiency/fuel-switching and
-# forced rationing. The first EFFICIENCY_FRAC of the reduction is
-# low-cost efficiency that avoids downstream harm, the remainder is forced rationing
-# that propagates to dependent sectors (it enters the cross-sector stress exactly
-# like an involuntary shortfall) and is therefore not a free way to erase demand.
-# The share is a scenario parameter to be swept, so the optimizer can no longer
-# relabel welfare-reducing rationing as costless demand management.
+# Split of managed demand reduction: the first EFFICIENCY_FRAC is low-cost efficiency that
+# avoids downstream harm, the remainder is forced rationing that propagates to dependent
+# sectors like an involuntary shortfall. Swept as a scenario parameter so the optimizer
+# cannot relabel welfare-reducing rationing as costless demand management.
 EFFICIENCY_FRAC = 0.40
-# Cost of the efficiency portion as a fraction of the crude price (cheap abatement /
-# fuel switching that preserves most output). Forced rationing, by contrast, is an
-# unmet need and is priced at the sector's direct-shortage penalty pi_ns (C6).
+# Cost of the efficiency portion as a fraction of the crude price (cheap abatement / fuel
+# switching). Forced rationing is instead priced at pi_ns (C6).
 EFFICIENCY_COST_FRAC = 0.30
 
-# Equity service floor: minimum service ratio guaranteed to protected priority
-# sectors of vulnerable countries while oil is physically available. MODELLING CHOICE.
+# Minimum service ratio guaranteed to priority sectors of vulnerable countries while oil is
+# physically available. Modelling choice.
 SERVICE_FLOOR = 0.60
 
-# Preemptive (lexicographic) weight ($/bbl) on any priority-floor breach (MODELLING
-# WEIGHT, not data). Set above the sum of the maximum competing per-barrel marginals
-# (direct penalty <=300, amplification relief, and price channel, together bounded
-# below ~1000/bbl by the calibration), so meeting the floor always dominates any
-# economic saving from breaching it. This is the Archimedean realization of
-# lexicographic goal programming: the solution equals the two-phase optimum that
-# first minimizes floor breach and then minimizes economic cost. In every solved
-# scenario the breach is exactly zero, so the term contributes nothing to reported
-# welfare and the floor acts as a hard guarantee whenever it is physically feasible.
+# Lexicographic weight ($/bbl) on any priority-floor breach (modelling weight, not data).
+# Set above the sum of competing per-barrel marginals (~1000/bbl by calibration) so meeting
+# the floor dominates any economic saving from breaching it, realizing lexicographic goal
+# programming. The breach is exactly zero in every solved scenario, so it adds nothing to
+# reported welfare and the floor is a hard guarantee wherever physically feasible.
 FLOOR_PENALTY = 2000.0
 
 # Emergency substitute supply (P6) cap, fraction of daily demand coverable per
 # stage via refinery-yield reallocation, product-stock release, or fuel switching.
 SUBSTITUTE_SUPPLY_FRAC = 0.05
 
-# Per-barrel resource/opportunity cost of emergency substitute supply ($/bbl).
-# Beyond the fixed activation charge gamma_{P6}, each substitute
-# barrel consumes a real resource: product stocks sold from inventory, refinery
-# reconfiguration, or a switch to a pricier alternative fuel. We price it above the
-# reserve-replacement cost because these are second-best, higher-marginal-cost
-# sources, which stops P6 from being an almost-free bulk lever and tests whether its
-# leading rank in the attribution survives a transparent variable cost.
+# Per-barrel resource cost of emergency substitute supply ($/bbl), beyond the fixed
+# activation charge gamma_{P6}. Priced above reserve-replacement cost as a second-best
+# source, so P6 is not an almost-free bulk lever.
 SUBSTITUTE_SUPPLY_COST = 95.0
-# P6 disaggregated into three physically distinct sub-instruments,
-# each with its own per-barrel cost, its own share of the substitute capacity, and its
-# own dynamics. Product-stock release draws a FINITE depleting inventory (cheapest,
-# existing barrels), refinery-yield reallocation shifts processing toward the short
-# product at a moderate cost, inter-fuel switching is the priciest second-best source
-# and is an oil-demand reduction in eligible sectors. The share-weighted mean cost is
-# close to the former single SUBSTITUTE_SUPPLY_COST, so the aggregate calibration is
-# preserved while the channels are no longer fungible.
+# P6 disaggregated into three sub-instruments, each with its own cost, capacity share, and
+# dynamics: product-stock release (cheapest, finite depleting inventory), refinery-yield
+# reallocation (moderate), inter-fuel switching (priciest, an oil-demand reduction). The
+# share-weighted mean matches SUBSTITUTE_SUPPLY_COST, preserving the aggregate calibration.
 SUBSTITUTE_COST_PS = 70.0     # product-stock release ($/bbl)
 SUBSTITUTE_COST_RF = 95.0     # refinery-yield reallocation ($/bbl)
 SUBSTITUTE_COST_FS = 120.0    # inter-fuel switching ($/bbl)
 SUBSTITUTE_CHANNEL_SHARE = {"ps": 0.40, "rf": 0.35, "fs": 0.25}  # per-stage cap split
-# Product-stock inventory as a FIXED number of days of daily release capacity, so the
-# physical stock does not scale with the stage length. At the default
-# STAGE_DAYS=25 this equals 2 stages of per-stage capacity, so headline results are
-# unchanged, but a longer- or shorter-stage sensitivity holds the barrels fixed.
+# Product-stock inventory as a fixed number of days of daily release capacity, so the stock
+# does not scale with stage length. At STAGE_DAYS=25 this is 2 stages of capacity, holding
+# barrels fixed under a stage-length sensitivity.
 PRODUCT_STOCK_DAYS = 50.0     # = 2 stages x 25 days at the default stage length
 
-# Reserve-cover threshold (days) below which a country's healthcare and electricity
-# are priority pairs for the floor. Well under the IEA 90-day obligation.
+# Reserve-cover threshold (days) below which a country's healthcare and electricity are
+# priority pairs for the floor. Well under the IEA 90-day obligation.
 PRIORITY_SPR_THRESHOLD = 30.0
 
-# Replacement (opportunity) cost of a drawn-down reserve barrel ($/bbl). A released
-# barrel is consumed during the crisis but must be repurchased afterward at roughly
-# the market price, and holding it forgoes its option value against a worse later
-# state. Charging the pre-crisis price is a conservative, documented value: it stops
-# reserve release from being a free lever and tests whether the reserve-first ranking
-# survives a realistic drawdown cost.
+# Replacement/opportunity cost of a drawn-down reserve barrel ($/bbl): it must be
+# repurchased afterward at roughly the market price and forgoes its option value. Charging
+# the pre-crisis price is conservative, so reserve release is not a free lever.
 RESERVE_REPLACEMENT_COST = 72.0
 
-# ---------------------------------------------------------------------------
-# Oil-price-shock cost. The world supply loss raises the world price by
-# dP = P0 * (loss / Qbar) / |eta_D| (short-run inverse demand) and every barrel
-# still consumed pays dP. See paper Table tab_priceparams. Literature values.
-# ---------------------------------------------------------------------------
+# Oil-price-shock cost. World supply loss raises the price by dP = P0 * (loss/Qbar) / |eta_D|
+# (short-run inverse demand) and every barrel still consumed pays dP. See paper Table
+# tab_priceparams. Literature values.
 BASELINE_OIL_PRICE = 72.0       # P0, pre-disruption Brent ($/bbl), EIA/IEA
 OIL_DEMAND_ELASTICITY = -0.20   # eta_D short-run, elastic end of range (Caldara et al. 2019)
 WORLD_OIL_SUPPLY_MBD = 102.0    # Qbar, global liquids supply (EIA/IEA)
-# Sector-specific short-run price responsiveness. The price-
-# induced contraction is NOT uniform across sectors: switchable and discretionary
-# uses (oil-fired power, some industry) cut more per unit price rise than essential,
-# inelastic uses (residential heating, healthcare). These are RELATIVE weights on the
-# common contraction fraction, build_model rescales them by one factor so the demand-
-# weighted mean is 1, which preserves aggregate market clearing (the coalition-wide
-# contraction is unchanged, only its sectoral incidence differs). Orders of magnitude
-# follow short-run sectoral oil-demand elasticities (transport the numeraire).
+# Sector-specific short-run price responsiveness. Switchable/discretionary uses (oil-fired
+# power, some industry) cut more per unit price rise than essential inelastic uses
+# (residential heating, healthcare). Relative weights on the common contraction fraction.
+# build_model rescales so the demand-weighted mean is 1, preserving aggregate market
+# clearing. Magnitudes follow short-run sectoral oil-demand elasticities (transport = 1).
 PRICE_CONTRACTION_WEIGHT: Dict[str, float] = {
     "electricity": 1.5, "industry": 1.2, "transport": 1.0,
     "agriculture": 0.8, "residential": 0.7, "healthcare": 0.3,
 }
 
-# Regional differentiation of the cross-sector cascade. Emerging
-# importers carry more concentrated and less substitutable energy dependence, so
-# their inter-sector amplification is scaled up relative to the global WIOD anchor of
-# BETA and advanced importers down. build_model renormalizes the scales so the demand-
-# weighted mean is 1, which holds the overall calibrated intensity fixed and only
-# REDISTRIBUTES it across regions, turning the single global matrix into regional
-# matrices (the global matrix is recovered when both scales are 1). Countries not
-# listed as advanced are treated as emerging.
+# Regional differentiation of the cross-sector cascade. Emerging importers carry more
+# concentrated, less substitutable energy dependence, so their amplification is scaled up
+# relative to the global WIOD anchor (BETA) and advanced importers down. build_model
+# renormalizes so the demand-weighted mean is 1, redistributing intensity across regions
+# without changing the total. Non-advanced countries are treated as emerging.
 ADVANCED_ECONOMIES = {"JPN", "KOR", "TWN", "HKG", "SGP", "DEU", "ITA", "ESP", "FRA",
                       "GBR", "NLD", "BEL", "AUT", "CHE", "SWE", "AUS", "NZL", "ISR",
                       "CAN", "USA", "NOR", "DNK", "FIN", "IRL"}
@@ -319,10 +256,9 @@ def cascade_region_scale(code: str) -> float:
 
 @lru_cache(maxsize=1)
 def leontief_cascade_matrix() -> Tuple[Tuple[str, Dict[str, float]], ...]:
-    """Total-requirements cascade weights M = (I - beta)^{-1} - I, the full
-    Leontief-inverse benchmark for the single-pass BETA.
-    Returned as an immutable tuple of (sector, {supplier: weight}) so it can be
-    cached; M >= BETA elementwise because it sums every higher-order indirect path."""
+    """Total-requirements cascade weights M = (I - beta)^{-1} - I, the Leontief-inverse
+    benchmark for single-pass BETA. Immutable tuple of (sector, {supplier: weight}) for
+    caching. M >= BETA elementwise since it sums every higher-order indirect path."""
     secs = list(SECTORS)
     idx = {s: i for i, s in enumerate(secs)}
     B = np.zeros((len(secs), len(secs)))
@@ -335,37 +271,31 @@ def leontief_cascade_matrix() -> Tuple[Tuple[str, Dict[str, float]], ...]:
 
 
 def cascade_matrix_for(amp_spec: str) -> Dict[str, Dict[str, float]]:
-    """Cross-sector cascade weights for an amplification specification: the
-    single-pass BETA for 'headline'/'capped', the total-requirements Leontief
-    inverse for 'leontief'."""
+    """Cross-sector cascade weights: single-pass BETA for 'headline'/'capped',
+    total-requirements Leontief inverse for 'leontief'."""
     if amp_spec == "leontief":
         return {s: dict(row) for s, row in leontief_cascade_matrix()}
     return BETA
-# Spare capacity (mbd) reaching the market WITHOUT crossing the chokepoint. World
-# surplus is ~4 mbd (EIA 2024-25) but mostly behind Hormuz, so only ~2 mbd is
-# off-strait.
+# Spare capacity (mbd) reaching the market without crossing the chokepoint. World surplus
+# is ~4 mbd (EIA 2024-25) but mostly behind Hormuz, so only ~2 mbd is off-strait.
 GLOBAL_SPARE_CAPACITY_MBD = 2.0
 
-# Freight/war-risk premium on sea legs: effective cost = c_a*(1 + FREIGHT_PREMIUM*
-# (1 - availability)). At full closure sea freight roughly triples, matching
-# war-risk insurance and VLCC charter-rate spikes in Hormuz/Red Sea crises.
-# Pipelines and inland delivery are unaffected.
+# Freight/war-risk premium on sea legs: cost = c_a*(1 + FREIGHT_PREMIUM*(1 - availability)).
+# At full closure sea freight roughly triples, matching war-risk insurance and VLCC charter
+# spikes in Hormuz/Red Sea crises. Pipelines and inland delivery are unaffected.
 FREIGHT_PREMIUM = 2.0
 
-# Diversification (P4): irreversible build-out adding DIVERSIFICATION_FACTOR of each
-# bypass arc's capacity, only from DIVERSIFICATION_STAGE onward and while P4 is on.
-# Half-capacity is a partial medium-term build-out, not a full network duplicate.
+# Diversification (P4): irreversible build-out adding DIVERSIFICATION_FACTOR of each bypass
+# arc's capacity from DIVERSIFICATION_STAGE onward while P4 is on. Half-capacity is a partial
+# medium-term build-out, not a full network duplicate.
 DIVERSIFICATION_FACTOR = 0.5
 DIVERSIFICATION_STAGE = 2
 
-# Bilateral sharing (P5): each exposed importer may receive up to SHARING_FRAC of
-# its daily demand from Western hubs. The implied ~1 mbd total is on the scale of
-# IEA collective stock-release actions.
+# Bilateral sharing (P5): each exposed importer may receive up to SHARING_FRAC of daily
+# demand from Western hubs. The implied ~1 mbd total is on the scale of IEA collective
+# stock-release actions.
 SHARING_FRAC = 0.03
 
-# ---------------------------------------------------------------------------
-# Disruption states
-# ---------------------------------------------------------------------------
 DISRUPTION_STATES = ["open", "restricted", "closed"]
 
 # Chokepoint availability fraction per state
@@ -375,18 +305,12 @@ STATE_AVAILABILITY = {
     "closed": 0.0,
 }
 
-# ---------------------------------------------------------------------------
-# Loss scaling
-# ---------------------------------------------------------------------------
-# Multiplier on GDP-converted losses in the reduced-form screen (analysis.py).
-# Set to 1.0 for no rescaling. Reported losses come from the solved MIP.
+# Multiplier on GDP-converted losses in the reduced-form screen (analysis.py). Reported
+# losses come from the solved MIP.
 LOSS_SCALING = 1.0
 
-# ---------------------------------------------------------------------------
-# Plotting palette
-# ---------------------------------------------------------------------------
-# Colorblind-aware, print-safe palette. Figures draw from these hues through
-# the semantic maps below, so each concept keeps a consistent color.
+# Colorblind-aware, print-safe palette. The semantic maps below draw from these hues so each
+# concept keeps a consistent color.
 PAL = {
     'navy':   '#2F4B7C',   # deep blue
     'blue':   '#4C72B0',   # blue
@@ -454,19 +378,13 @@ REGION_COLORS = {
 }
 
 
-# ======================================================================
 # DATA: countries, regions, chokepoints, network
-# ======================================================================
 from dataclasses import dataclass, field
 from collections import defaultdict
 from typing import Dict, List, Set, Tuple
 import numpy as np
 
 
-
-# ===================================================================
-# Country
-# ===================================================================
 @dataclass
 class Country:
     code: str
@@ -483,12 +401,9 @@ class Country:
     renew_pct: float           # renewable share (%)
     sector_weights: Dict[str, float] = field(default_factory=dict)
 
-# Share of each country's oil demand by end-use sector, as regional averages from
-# IEA oil (petroleum-product) final-consumption balances. Petroleum end use is
-# transport-dominated, direct oil-fired electricity is small outside a few
-# economies, industry captures petrochemical feedstock and process heat. The
-# "healthcare" row is not a standalone IEA category but a documented proxy for
-# critical-services oil use (hospitals, water, cold chain, emergency logistics),
+# Share of each country's oil demand by end-use sector, regional averages from IEA
+# petroleum-product final-consumption balances. Transport-dominated. "healthcare" is a
+# proxy for critical-services oil use (hospitals, water, cold chain, emergency logistics),
 # carved from the residential/commercial and transport rows. Each region sums to 1.0.
 SECTOR_PROFILES = {
     "Asia-Pac.": {"electricity": 0.08, "industry": 0.24, "agriculture": 0.07,
@@ -516,10 +431,9 @@ def _build_country(code, name, region, dm, hd, md, sd, spr, gdp, pop, ren):
 def build_countries() -> Dict[str, Country]:
     """Build the full 53-country dataset.
 
-    Oil demand from EIA/IEA, chokepoint-dependence fractions from the EIA World
-    Oil Transit Chokepoints assessment, SPR coverage from the IEA 90-day mandate
-    (3-15 day buffers for non-members), GDP and population from the World Bank,
-    renewable share from IEA/IRENA.
+    Oil demand from EIA/IEA, chokepoint-dependence fractions from the EIA World Oil Transit
+    Chokepoints assessment, SPR coverage from the IEA 90-day mandate, GDP and population from
+    the World Bank, renewable share from IEA/IRENA.
     """
     # (code, name, region, demand_mbd, hormuz_dep, malacca_dep, suez_dep,
     #  spr_days, gdp_B, pop_M, renew_pct)
@@ -590,9 +504,6 @@ def build_countries() -> Dict[str, Country]:
     return countries
 
 
-# ===================================================================
-# Source regions
-# ===================================================================
 @dataclass
 class SourceRegion:
     sid: str
@@ -626,9 +537,6 @@ def build_sources() -> Dict[str, SourceRegion]:
     return sources
 
 
-# ===================================================================
-# Chokepoints
-# ===================================================================
 @dataclass
 class Chokepoint:
     cid: str
@@ -654,9 +562,6 @@ def build_chokepoints() -> Dict[str, Chokepoint]:
             for cid, name, tp, bp, bcp in raw}
 
 
-# ===================================================================
-# Processing / transshipment nodes
-# ===================================================================
 @dataclass
 class ProcessingNode:
     nid: str
@@ -691,9 +596,6 @@ def build_processing_nodes() -> Dict[str, ProcessingNode]:
             for nid, name, cap in raw}
 
 
-# ===================================================================
-# Network arcs
-# ===================================================================
 @dataclass
 class Arc:
     aid: str
@@ -705,8 +607,8 @@ class Arc:
     is_bypass: bool = False     # emergency rerouting/bypass arc (gated by P2)
     is_sharing: bool = False    # cross-border bilateral-sharing arc (gated by P5)
     is_pipeline: bool = False   # land pipeline leg (no maritime freight/war-risk premium)
-    relieves: str = ""          # chokepoint this arc physically bypasses, set only on the
-                                # bypass route so its flow counts once toward restored supply
+    relieves: str = ""          # chokepoint this bypass arc relieves, flow counts once
+                                # toward restored supply
 
 def build_arcs(sources, chokepoints, processing, countries) -> List[Arc]:
     """Build the 299 arcs connecting sources -> chokepoints -> processing -> countries."""
@@ -740,13 +642,11 @@ def build_arcs(sources, chokepoints, processing, countries) -> List[Arc]:
         arcs.append(Arc(_aid(), src, "PROC_HOUSTON", min(cap, 2.0), 1.3))
 
     # --- Chokepoint → Processing arcs ---
-    # Hormuz -> India direct: Indian refineries are on the Arabian Sea, reached
-    # from the Gulf without a second chokepoint.
+    # Hormuz -> India direct: Indian refineries reach the Gulf without a second chokepoint.
     for proc, cap, cost in [("PROC_JAMNAGAR", 4.0, 1.2), ("PROC_MUMBAI", 2.5, 1.0)]:
         arcs.append(Arc(_aid(), "CP_HORMUZ", proc, cap, cost))
-    # Gulf crude for East Asia goes Hormuz -> Malacca -> refineries (Malacca is
-    # the only sea route to China/Japan/Korea short of the Lombok/Sunda bypass).
-    # Tagged to Malacca so its closure severs this corridor.
+    # Gulf crude for East Asia goes Hormuz -> Malacca -> refineries. Tagged to Malacca so its
+    # closure severs the only sea route to China/Japan/Korea short of the Lombok/Sunda bypass.
     arcs.append(Arc(_aid(), "CP_HORMUZ", "CP_MALACCA", 12.0, 1.0, "CP_MALACCA"))
 
     # Malacca → East Asian refineries
@@ -755,24 +655,21 @@ def build_arcs(sources, chokepoints, processing, countries) -> List[Arc]:
                              ("PROC_TANJUNG", 2.0, 0.3)]:
         arcs.append(Arc(_aid(), "CP_MALACCA", proc, cap, cost))
 
-    # Malacca bypass (Lombok/Sunda). Originates post-Hormuz, where the crude sits
-    # before it would reach Malacca, so the detour goes around the Malacca node
-    # rather than through it. It is therefore available when Malacca is closed
-    # (Hormuz open) and is naturally zero when Hormuz itself is closed.
+    # Malacca bypass (Lombok/Sunda). Originates post-Hormuz, routing around the Malacca node,
+    # so it is available when Malacca is closed (Hormuz open) and zero when Hormuz is closed.
     for proc, cap, cost in [("PROC_JURONG", 2.5, 1.5), ("PROC_YOKOHAM", 2.0, 2.5),
                              ("PROC_QINGDAO", 2.5, 2.3)]:
         arcs.append(Arc(_aid(), "CP_HORMUZ", proc, cap, cost * 1.3, "", True,
                         relieves="CP_MALACCA"))
 
-    # Suez -> Europe/Med, tagged to Suez so a closure severs the Gulf/Red Sea
-    # -> Europe corridor (Cape of Good Hope bypass remains via rerouting).
+    # Suez -> Europe/Med, tagged to Suez so a closure severs the Gulf/Red Sea -> Europe
+    # corridor (Cape of Good Hope bypass remains via rerouting).
     for proc, cap, cost in [("PROC_ROTTER", 3.0, 1.8), ("PROC_TRIESTE", 2.5, 1.2),
                              ("PROC_SIDI", 1.5, 0.3)]:
         arcs.append(Arc(_aid(), "CP_SUEZ", proc, cap, cost, "CP_SUEZ"))
 
-    # Suez bypass (Cape of Good Hope). Originates post-Hormuz, so the route runs
-    # around Africa rather than through the Suez node. Available when Suez is
-    # closed (Hormuz open) and naturally zero when Hormuz itself is closed.
+    # Suez bypass (Cape of Good Hope). Originates post-Hormuz, routing around Africa, so it is
+    # available when Suez is closed (Hormuz open) and zero when Hormuz is closed.
     for proc, cap, cost in [("PROC_ROTTER", 3.5, 3.5), ("PROC_TRIESTE", 2.0, 3.2),
                              ("PROC_DURBAN", 0.8, 1.5)]:
         arcs.append(Arc(_aid(), "CP_HORMUZ", proc, cap, cost, "", True,
@@ -793,8 +690,8 @@ def build_arcs(sources, chokepoints, processing, countries) -> List[Arc]:
     # Yanbu → Sidi Kerir direct (Mediterranean via Red Sea pipeline)
     arcs.append(Arc(_aid(), "PROC_YANBU", "PROC_SIDI", 1.0, 1.5, "", True))
 
-    # Hormuz -> Bab el-Mandeb: Gulf crude for Europe and East Africa transits
-    # Bab (then Suez). Tagged to Bab so its closure severs the Red Sea corridor.
+    # Hormuz -> Bab el-Mandeb: Gulf crude for Europe and East Africa transits Bab (then Suez).
+    # Tagged to Bab so its closure severs the Red Sea corridor.
     arcs.append(Arc(_aid(), "CP_HORMUZ", "CP_BABEL", 4.0, 1.0, "CP_BABEL"))
 
     # Djibouti → landlocked East African nations
@@ -827,17 +724,15 @@ def build_arcs(sources, chokepoints, processing, countries) -> List[Arc]:
     americas_procs = ["PROC_HOUSTON", "PROC_SANTOS"]
 
     def _add_country_arcs(proc_list, country_list, base_cost=0.5):
-        # Last-mile cost = regional base handling charge plus a volume-dependent
-        # margin that falls with volume (economies of scale), spanning 0.10 $/bbl
-        # (largest in region) to 0.50 $/bbl (smallest). Cf. Rodrigue, The
-        # Geography of Transport Systems.
+        # Last-mile cost = regional base charge plus a volume-dependent margin falling with
+        # volume (economies of scale), 0.10 $/bbl (largest) to 0.50 $/bbl (smallest). Cf.
+        # Rodrigue, The Geography of Transport Systems.
         if not country_list:
             return
         vol_max = max(c.daily_oil_mbd for c in country_list)
         for j, proc in enumerate(proc_list):
-            # Hubs are listed by descending regional connectivity, so more
-            # peripheral hubs carry a small handling premium, making each
-            # (hub, country) arc cost distinct.
+            # Hubs listed by descending connectivity, so peripheral hubs carry a small
+            # handling premium, making each (hub, country) arc cost distinct.
             hub_term = 0.03 * j
             for c in country_list:
                 cap = max(0.1, c.daily_oil_mbd * 0.6)
@@ -852,10 +747,9 @@ def build_arcs(sources, chokepoints, processing, countries) -> List[Arc]:
     _add_country_arcs(africa_procs, africa_countries, 0.6)
     _add_country_arcs(americas_procs, americas_countries, 0.4)
 
-    # Cross-region emergency sharing arcs: Western hubs supply the most exposed
-    # major importers. Gated by sharing policy P5 (is_sharing=True), not P2.
-    # Each importer receives up to SHARING_FRAC of its daily demand, split
-    # across the two contributing hubs.
+    # Cross-region emergency sharing arcs: Western hubs supply the most exposed importers,
+    # gated by P5 (is_sharing=True, not P2). Each importer receives up to SHARING_FRAC of
+    # daily demand, split across the two hubs.
     share_hubs = ["PROC_ROTTER", "PROC_HOUSTON"]
     for proc in share_hubs:
         for c in asia_countries[:5]:  # five largest Asian importers
@@ -866,9 +760,6 @@ def build_arcs(sources, chokepoints, processing, countries) -> List[Arc]:
     return arcs
 
 
-# ===================================================================
-# Convenience: build everything
-# ===================================================================
 def build_all():
     """Return (countries, sources, chokepoints, processing, arcs)."""
     countries = build_countries()
@@ -916,9 +807,6 @@ class EnergyNetwork:
             self.out_arcs[a.origin].append(a)
             self.in_arcs[a.destination].append(a)
 
-    # ------------------------------------------------------------------
-    # Convenience helpers
-    # ------------------------------------------------------------------
     def summary(self) -> str:
         """Return a short text summary of the network."""
         n_normal = sum(1 for a in self.arcs if not a.is_bypass)
@@ -942,9 +830,7 @@ class EnergyNetwork:
                 f"arcs={len(self.arcs)})")
 
 
-# ======================================================================
 # MODEL: scenarios, cascade, stochastic MILP
-# ======================================================================
 import gc
 import pyomo.environ as pyo
 import numpy as np
@@ -985,19 +871,12 @@ _TRANSITIONS: Dict[str, Dict[str, Dict[str, float]]] = {
 _STATE_ORDER = {"open": 0, "restricted": 1, "closed": 2}
 _STATE_SEQ = ("open", "restricted", "closed")
 
-# ---------------------------------------------------------------------------
-# Continuous-time formulation of the disruption dynamics.
-#
-# The matrices above are calibrated at a reference stage length of 25 days. To
-# keep the disruption-duration distribution consistent across stage lengths, we
-# treat each as the 25-day transition of a continuous-time Markov chain with
-# generator Q, recovered once by the matrix logarithm Q = log(P_ref)/SD_ref, and
-# use the stage-t transition expm(Q * SD). At SD = 25 this reproduces the
-# reference matrices exactly (to machine precision), so the headline results are
-# unchanged, while a different stage length now scales through the same generator
-# rather than through an ad hoc rescaling. All three reference matrices are
-# embeddable: their generators have non-negative off-diagonal rates and zero row
-# sums, so expm(Q * SD) is a valid stochastic matrix for every SD > 0.
+# Continuous-time formulation of the disruption dynamics. The matrices above are calibrated
+# at a 25-day reference stage. Each is treated as the 25-day transition of a continuous-time
+# Markov chain with generator Q = log(P_ref)/SD_ref, and the stage-t transition is
+# expm(Q * SD), so any stage length scales through the same generator. At SD = 25 it
+# reproduces the reference matrices to machine precision. All three are embeddable (Q has
+# non-negative off-diagonal rates and zero row sums), so expm(Q * SD) is stochastic.
 STAGE_DAYS_REF = 25.0
 
 
@@ -1005,8 +884,8 @@ def _generator_from_matrix(rows: Dict[str, Dict[str, float]]) -> np.ndarray:
     """Continuous-time generator Q = log(P_ref)/SD_ref for a reference matrix."""
     P = np.array([[rows[i][j] for j in _STATE_SEQ] for i in _STATE_SEQ])
     Q = logm(P).real / STAGE_DAYS_REF
-    # Numerical clean-up: clip any tiny negative off-diagonal rate to zero and
-    # restore exact zero row sums, so Q is a bona fide generator.
+    # Clip tiny negative off-diagonal rates to zero and restore exact zero row sums, so Q is
+    # a bona fide generator.
     for i in range(3):
         for j in range(3):
             if i != j and Q[i, j] < 0.0:
@@ -1030,19 +909,16 @@ def _stage_matrix(regime: str, stage_days: float) -> Tuple[Tuple[float, ...], ..
     return tuple(tuple(float(P[i, j]) for j in range(3)) for i in range(3))
 
 
-# Decision-dependent uncertainty. When all three instruments in the coordinated
-# bundle are active at a stage, that stage's transition is drawn from the
-# responsive (de-escalated) matrix, making disruption probabilities a function of
-# the policy decisions.
+# Decision-dependent uncertainty. When all three bundle instruments are active at a stage,
+# that stage's transition is drawn from the responsive (de-escalated) matrix, making
+# disruption probabilities a function of the policy decisions.
 DEESCALATION_BUNDLE: Tuple[str, ...] = ("P1", "P2", "P3")
 
-# De-escalation effectiveness zeta: a coordinated response cuts the adverse
-# transition probability by this factor and reallocates the freed mass to
-# recovery. The HEADLINE specification is exogenous transitions (zeta = 0): policy
-# does not bend the disruption dynamics, since coordinated action has no estimated
-# causal effect on whether a chokepoint physically reopens. The policy-dependent
-# channel is treated as an exploratory upper bound, reported by re-solving with
-# zeta = 0.40 as a sensitivity, not as the main result.
+# De-escalation effectiveness zeta: a coordinated response cuts the adverse transition
+# probability by this factor and reallocates the freed mass to recovery. Headline is
+# exogenous transitions (zeta = 0), since coordinated action has no estimated causal effect
+# on whether a chokepoint reopens. The policy-dependent channel is an exploratory upper
+# bound, reported by re-solving at zeta = 0.40 as a sensitivity.
 DEESCALATION_FACTOR: float = 0.0
 
 
@@ -1050,9 +926,8 @@ def transition_matrix(regime: str,
                       stage_days: float = STAGE_DAYS) -> Dict[str, Dict[str, float]]:
     """The unresponsive (baseline) transition matrix for a regime.
 
-    Built from the regime's continuous-time generator as expm(Q * stage_days), so
-    it is consistent for any stage length. At stage_days = 25 it reproduces the
-    calibrated reference matrix to machine precision.
+    From the regime's generator as expm(Q * stage_days), consistent for any stage length. At
+    stage_days = 25 it reproduces the calibrated reference matrix to machine precision.
     """
     P = _stage_matrix(regime, float(stage_days))
     return {_STATE_SEQ[i]: {_STATE_SEQ[j]: P[i][j] for j in range(3)}
@@ -1064,9 +939,9 @@ def responsive_matrix(unresponsive: Dict[str, Dict[str, float]],
                       ) -> Dict[str, Dict[str, float]]:
     """The de-escalated matrix induced by an active coordinated response.
 
-    Adverse transition mass is scaled by (1 - rho) and reallocated to recovery.
-    Rows stay valid distributions, and rho = 0 recovers the unresponsive matrix.
-    rho defaults to DEESCALATION_FACTOR, read at call time for sensitivity sweeps.
+    Adverse transition mass is scaled by (1 - rho) and reallocated to recovery. rho = 0
+    recovers the unresponsive matrix. rho defaults to DEESCALATION_FACTOR, read at call time
+    for sensitivity sweeps.
     """
     if rho is None:
         rho = DEESCALATION_FACTOR
@@ -1091,9 +966,8 @@ def responsive_matrix(unresponsive: Dict[str, Dict[str, float]],
     return resp
 
 
-# Disruption class -> (initial state, unresponsive regime). The unresponsive
-# regime is each class's calibrated baseline. The responsive matrix is derived
-# from it, so only coordinated early action bends the transitions.
+# Disruption class -> (initial state, unresponsive regime). The unresponsive regime is each
+# class's calibrated baseline. The responsive matrix is derived from it.
 _CLASS_CONFIG: Dict[str, Tuple[str, str]] = {
     "partial_restriction": ("restricted", "standard"),
     "full_closure":        ("closed",     "standard"),
@@ -1130,9 +1004,8 @@ def decision_dependent_probs(scenarios: List["Scenario"],
                              ) -> Dict[int, float]:
     """Realized scenario probabilities given a de-escalation pattern.
 
-    deescalation[w] is the per-stage binary indicators along scenario w's path.
-    Returns {w: p_w}, the product of per-edge probabilities under those
-    indicators. Used for reporting expectations at the optimal policy.
+    deescalation[w] is the per-stage binary indicators along scenario w's path. Returns
+    {w: p_w}, the product of per-edge probabilities under those indicators.
     """
     unresp = transition_matrix(unresponsive_regime)
     resp = responsive_matrix(unresp)
@@ -1147,7 +1020,6 @@ def decision_dependent_probs(scenarios: List["Scenario"],
     return probs
 
 
-# Full scenario tree generation
 def generate_full_tree(
     initial_state: str = "closed",
     regime: str = "standard",
@@ -1156,9 +1028,8 @@ def generate_full_tree(
 ) -> List[Scenario]:
     """Enumerate all paths through the Markov disruption tree.
 
-    initial_state is the stage-0 state, regime selects the transition matrix, and
-    stage_days sets the per-stage transition through the continuous-time generator.
-    Returns every path with its probability, states, and availability.
+    initial_state is the stage-0 state, regime selects the transition matrix, stage_days sets
+    the per-stage transition. Returns every path with its probability, states, availability.
     """
     trans = transition_matrix(regime, stage_days)
 
@@ -1182,7 +1053,6 @@ def generate_full_tree(
     return scenarios
 
 
-# Convenience wrapper
 def build_scenario_set(
     disruption_class: str = "full_closure",
     target_count: int = 30,
@@ -1190,15 +1060,13 @@ def build_scenario_set(
 ) -> List[Scenario]:
     """Generate the full scenario tree for a named disruption class.
 
-    Returns the complete support of disruption paths, each carrying its nominal
-    probability under the class's unresponsive regime. Under decision-dependent
-    uncertainty the model overrides these with policy-dependent probabilities
-    from the same regime. The full tree is needed so the non-anticipativity links
-    and per-node de-escalation indicators are well defined. target_count is
-    retained for interface compatibility."""
-    # Normal-operations benchmark: chokepoint open every stage, so no shortfall,
-    # cascade, or price increase. Single deterministic scenario anchoring every
-    # reported loss as a delta from undisrupted operations.
+    Returns the complete support of disruption paths, each with its nominal probability under
+    the class's unresponsive regime (the model overrides these with policy-dependent
+    probabilities under decision-dependent uncertainty). The full tree keeps the
+    non-anticipativity links and per-node de-escalation indicators well defined. target_count
+    is retained for interface compatibility."""
+    # Normal-operations benchmark: chokepoint open every stage, so no shortfall, cascade, or
+    # price increase. One deterministic scenario anchoring reported losses as deltas.
     if disruption_class == "no_disruption":
         n = NUM_STAGES
         return [Scenario(omega=0, prob=1.0, states=["open"] * n,
@@ -1209,11 +1077,9 @@ def build_scenario_set(
                               stage_days=stage_days)
 
 
-# Chokepoint set per disruption class
-# The multi-chokepoint class closes the three coupled passages at once (Hormuz,
-# Bab el-Mandeb, Suez), severing the Gulf-to-Europe corridor and leaving only
-# the policy-activated bypasses (Fujairah, East-West pipeline to Yanbu, Cape of
-# Good Hope) as outlets for Gulf crude oil.
+# The multi-chokepoint class closes the three coupled passages at once (Hormuz, Bab
+# el-Mandeb, Suez), severing the Gulf-to-Europe corridor and leaving only the
+# policy-activated bypasses (Fujairah, East-West pipeline to Yanbu, Cape of Good Hope).
 MULTI_CHOKEPOINT_CLOSURE = ["CP_HORMUZ", "CP_BABEL", "CP_SUEZ"]
 
 
@@ -1231,8 +1097,8 @@ def cascade_single_pass(
 ) -> Dict[str, float]:
     """Post-cascade fulfillment ratios from a single beta-matrix pass.
 
-    Matches the first-order inoperability input-output term in the optimization.
-    Input and output are sector ratios in [0, 1].
+    Matches the first-order inoperability input-output term in the MIP. Input and output are
+    sector ratios in [0, 1].
     """
     phi = {s: fulfillment.get(s, 1.0) for s in SECTORS}
 
@@ -1265,11 +1131,10 @@ def compute_cascade_losses(
     chokepoint_dep: float,
     duration_days: int,
 ) -> Dict:
-    """Decompose one country's output losses into direct, cascade, and
-    bottleneck components.
+    """Decompose one country's output losses into direct, cascade, and bottleneck components.
 
-    chokepoint_dep is the supply fraction via the disrupted chokepoint. Returns a
-    per-sector dict (direct/cascade/bottleneck/total) plus _summary.
+    chokepoint_dep is the supply fraction via the disrupted chokepoint. Returns a per-sector
+    dict (direct/cascade/bottleneck/total) plus _summary.
     """
     energy_red = chokepoint_dep  # oil reduction fraction
     spr_offset = min(energy_red,
@@ -1327,9 +1192,8 @@ def build_damage_segments() -> Dict[str, List[Tuple[float, float]]]:
 def realized_scenario_probs(m) -> Dict[int, float]:
     """Scenario probabilities implied by a solved model.
 
-    Under decision-dependent uncertainty these follow from the optimal
-    de-escalation pattern, so post-solve reporting reweights by them rather than
-    the nominal probabilities. Falls back to nominal when uncertainty is exogenous.
+    Under decision-dependent uncertainty these follow from the optimal de-escalation pattern,
+    so reporting reweights by them. Falls back to nominal when uncertainty is exogenous.
     """
     scen = m._scenarios_ref
     if getattr(m, "ddu_active", False):
@@ -1341,10 +1205,9 @@ def realized_scenario_probs(m) -> Dict[int, float]:
 
 
 def _cost_upper_bound(m, network, enable_cascade, SD, equity_weight):
-    """Tight upper bound on a scenario's total cost C_w, the big-M for the
-    McCormick products in the decision-dependent objective. Each component is a
-    worst case, and the equity weight scales only the priority pairs it multiplies
-    in the objective, keeping the bound tight at high weights."""
+    """Tight upper bound on a scenario's total cost C_w, the big-M for the McCormick products
+    in the decision-dependent objective. Each component is a worst case, and the equity
+    weight scales only its priority pairs, keeping the bound tight at high weights."""
     eq = max(1.0, float(equity_weight))
     prio = set(m.K_PRIO)
 
@@ -1407,34 +1270,27 @@ def build_model(
 ) -> pyo.ConcreteModel:
     """Build the complete stochastic MIP.
 
-    coordinated_price / coordinating_countries control the decentralization analysis
-    (the world-price public good). With coordinated_price=True and
-    coordinating_countries=None (default, the planner), the aggregate managed demand
-    reduction (conservation) of ALL importers moderates the world price. With
-    coordinated_price=False (the atomistic price-taking lower-bound benchmark), no
-    importer internalizes its price impact, so the price responds only to the
-    structural shortfall net of spare and rerouting. With coordinating_countries set to
-    a subset, only that coalition's conservation moderates the price (partial
-    coordination), used to build the cooperative-game value.
+    coordinated_price / coordinating_countries control the decentralization analysis (the
+    world-price public good). Default (coordinated_price=True, coordinating_countries=None,
+    the planner) lets all importers' conservation moderate the world price. False is the
+    atomistic price-taking benchmark (no importer internalizes its price impact). A subset is
+    partial coordination, used to build the cooperative-game value.
 
-    enable_cascade=False omits cascade amplification and policy_subset restricts
-    available policies (ablations). stage_days sets the per-stage length in days
-    (default STAGE_DAYS=25). Demand and capacities scale with it, so longer
-    durations (180, 270, 365) enlarge stage length, not stage count.
+    enable_cascade=False omits cascade amplification and policy_subset restricts available
+    policies (ablations). stage_days sets the per-stage length (default STAGE_DAYS=25).
+    Demand and capacities scale with it, so longer durations enlarge stage length, not count.
     """
-    # Stage length in days. Demand and capacities scale linearly with SD, so a
-    # fractional value represents a horizon as NUM_STAGES equal stages.
+    # Stage length in days. Demand and capacities scale linearly with SD, so a fractional
+    # value represents a horizon as NUM_STAGES equal stages.
     SD = STAGE_DAYS if stage_days is None else float(stage_days)
 
     m = pyo.ConcreteModel("GeoEnergy_SCRO")
-    # Kept for post-solve reporting: realized scenario probabilities depend on the
-    # de-escalation decisions, so reporting must reweight by them, not the nominal.
+    # Kept for post-solve reporting: realized probabilities depend on the de-escalation
+    # decisions, so reporting reweights by them, not the nominal.
     m._scenarios_ref = scenarios
     m._unresponsive_regime = unresponsive_regime
 
-    # ------------------------------------------------------------------
     # Sets
-    # ------------------------------------------------------------------
     stages = list(range(NUM_STAGES))
     omega_set = list(range(len(scenarios)))
 
@@ -1451,8 +1307,8 @@ def build_model(
         policy_subset = [p.pid for p in POLICIES]
     m.P = pyo.Set(initialize=policy_subset)
 
-    # Mobilizable arcs: rerouting/bypass (gated by P2/P4) and bilateral-sharing
-    # (gated by P5). Both carry flow only up to a policy-activated capacity y.
+    # Mobilizable arcs: rerouting/bypass (gated by P2/P4) and bilateral-sharing (gated by P5),
+    # each carrying flow only up to a policy-activated capacity y.
     alt_aids = [a.aid for a in network.arcs if a.is_bypass or a.is_sharing]
     m.A_ALT = pyo.Set(initialize=alt_aids)
 
@@ -1473,30 +1329,27 @@ def build_model(
             priority_pairs.append((c.code, "electricity"))
     m.K_PRIO = pyo.Set(initialize=priority_pairs, dimen=2)
 
-    # ------------------------------------------------------------------
     # Parameters
-    # ------------------------------------------------------------------
     arc_dict = {a.aid: a for a in network.arcs}
 
-    # Per-stage arc capacity (Mbbl), scenario-dependent via chokepoint
-    # availability. The disrupted chokepoint may be one id or a set (the
-    # multi-chokepoint case closes Hormuz, Bab el-Mandeb, Suez together), so
-    # normalise to a set for membership.
+    # Per-stage arc capacity (Mbbl), scenario-dependent via chokepoint availability. The
+    # disrupted chokepoint may be one id or a set (the multi-chokepoint case), so normalize
+    # to a set for membership.
     _disrupted = ({disrupted_chokepoint} if isinstance(disrupted_chokepoint, str)
                   else set(disrupted_chokepoint))
 
-    # Maritime sea legs carry the freight / war-risk premium under disruption.
-    # Pipelines and last-mile inland delivery (arcs into a country node) are
-    # excluded, being unexposed to tanker freight spikes or hull war-risk insurance.
+    # Maritime sea legs carry the freight / war-risk premium under disruption. Pipelines and
+    # last-mile inland delivery (arcs into a country node) are excluded, being unexposed to
+    # tanker freight spikes or hull war-risk insurance.
     _country_ids = set(network.country_nodes)
     _maritime = {a.aid for a in network.arcs
                  if not a.is_pipeline and a.destination not in _country_ids}
     m._maritime_ids = _maritime  # used by the cost-component decomposition
 
-    # Escape routes for the disrupted chokepoint(s): bypass arcs tagged with the
-    # chokepoint they physically relieve. Only their realized flow counts as
-    # restored world supply, capped per chokepoint by the physical bypass
-    # capacity. Arcs relieving a non-disrupted chokepoint do not count.
+    # Escape routes for the disrupted chokepoint(s): bypass arcs tagged with the chokepoint
+    # they relieve. Only their realized flow counts as restored world supply, capped per
+    # chokepoint by physical bypass capacity. Arcs relieving a non-disrupted chokepoint do
+    # not count.
     _escape_by_cp = {}
     for a in network.arcs:
         cp = getattr(a, "relieves", "")
@@ -1535,15 +1388,14 @@ def build_model(
         c = network.countries.get(n)
         if c is None:
             return 0.0
-        # demand_scale feeds a price-induced consumption contraction back into
-        # the physical demand balance (market-clearing convergence check).
+        # demand_scale feeds a price-induced contraction back into the physical demand
+        # balance (market-clearing convergence check).
         return c.daily_oil_mbd * c.sector_weights.get(s, 0.0) * SD * demand_scale
     m.demand = pyo.Param(m.C, m.S, m.T, initialize=demand_rule)
 
-    # Baseline non-chokepoint supply (Mbbl per stage). The share of a country's
-    # crude oil not routed through the disrupted chokepoint(s) is always
-    # available, so only the dependent share is at risk and reported losses are
-    # clean deltas from undisrupted operations.
+    # Baseline non-chokepoint supply (Mbbl per stage). The share of crude oil not routed
+    # through the disrupted chokepoint(s) is always available, so only the dependent share is
+    # at risk and reported losses are clean deltas from undisrupted operations.
     _DEP_ATTR = {"CP_HORMUZ": "hormuz_dep", "CP_MALACCA": "malacca_dep",
                  "CP_SUEZ": "suez_dep"}
 
@@ -1558,9 +1410,8 @@ def build_model(
             if attr:
                 route_share += getattr(c, attr, 0.0)
         route_share = min(1.0, route_share)
-        # Exposure applies only to the imported fraction of demand: the
-        # domestic-production and non-imported share is never at risk. exposure =
-        # import_dependence * route_share.
+        # Exposure applies only to the imported fraction of demand:
+        # exposure = import_dependence * route_share.
         exposure = min(1.0, IMPORT_SHARE.get(n, 1.0) * route_share)
         return (1.0 - exposure) * c.daily_oil_mbd * SD
     m.base_cap = pyo.Param(m.C, m.T, initialize=base_supply_rule)
@@ -1581,14 +1432,12 @@ def build_model(
         return c.spr_max_draw_rate * SD
     m.r_max = pyo.Param(m.C, initialize=max_draw_rule)
 
-    # Per-stage policy activation cost, rescaled $B to $M to match objective
-    # units (shortage penalty in $/bbl times demand in Mbbl).
+    # Per-stage policy activation cost, rescaled $B to $M to match objective units (shortage
+    # penalty in $/bbl times demand in Mbbl).
     COST_SCALE_USD_M_PER_USD_B = 1000.0
-    # Activation costs and budgets are quoted per 25-day reference stage and scaled
-    # by the actual stage length SD/25, so keeping a policy active
-    # costs in proportion to calendar time. At the 25-day headline the factor is one,
-    # and a duration experiment that lengthens the stage now charges activation per
-    # day rather than a flat amount per stage.
+    # Activation costs and budgets are quoted per 25-day reference stage and scaled by SD/25,
+    # so keeping a policy active costs in proportion to calendar time. Factor is one at the
+    # 25-day headline.
     _stage_cost_factor = float(SD) / 25.0
     m.gamma = pyo.Param(
         m.P,
@@ -1606,25 +1455,19 @@ def build_model(
     # Scenario probabilities
     m.prob = pyo.Param(m.OMEGA, initialize={w: scenarios[w].prob for w in omega_set})
 
-    # Shortage penalty pi_ns ($/barrel) and cascade penalty eta_ns, from the
-    # CONFIG section (SHORTAGE_PENALTY / CASCADE_WEIGHT) so the extensive form and
-    # the decomposition share one source of truth.
+    # Shortage penalty pi_ns ($/barrel) from SHORTAGE_PENALTY, so the extensive form and the
+    # decomposition share one source of truth.
     m.pi_ns = pyo.Param(m.C, m.S,
                          initialize={(n, s): SHORTAGE_PENALTY[s]
                                      for n in network.country_nodes
                                      for s in SECTORS})
 
-    # Amplification damage intensity eta_s (dimensionless multiplier). The damage
-    # function is normalized so its inoperability index Delta = g_s(u)/g_s(1) lies in
-    # [0,1], and eta_s = VA_LOSS_FRAC * g_s(1) restores the
-    # sector-specific damage intensity: larger for critical services (healthcare,
-    # electricity) whose failure inflicts economic and human costs exceeding their own
-    # value added (the cost of unserved critical load). The objective term
-    # eta_s * VA_nst * Delta = VA_nst * g_s(u) is therefore identical to before.
-    # Amplification specification. The capped variant bounds
-    # the loss at own value added (eta_s = min(1, g_s(1))), the Leontief variant keeps
-    # eta_s = g_s(1) but uses the total-requirements cascade matrix in the stress
-    # constraint below. 'headline' is the reported normalized first-pass model.
+    # Amplification damage intensity eta_s (dimensionless). eta_s = VA_LOSS_FRAC * g_s(1) is
+    # larger for critical services (healthcare, electricity) whose failure costs exceed their
+    # value added, so eta_s * VA_nst * Delta = VA_nst * g_s(u). Amplification specification:
+    # 'capped' bounds the loss at own value added (eta_s = min(1, g_s(1))), 'leontief' keeps
+    # eta_s = g_s(1) but uses the total-requirements cascade matrix in the stress constraint,
+    # 'headline' is the reported normalized first-pass model.
     cascade_mat = cascade_matrix_for(amp_spec)
     def _eta_of(s):
         g1 = _damage_norm(s)
@@ -1634,14 +1477,11 @@ def build_model(
                                       for n in network.country_nodes
                                       for s in SECTORS})
 
-    # Value-added base for the amplification term: the STAGE value added of the
-    # country-sector, VA_nst = GDP_n * VA_SHARE_s * (SD/365), in the model's
-    # dollar-million units (GDP is in $B, so times 1000). Scaling annual value added
-    # to the stage length keeps the loss time-consistent, so a shortfall over a
-    # 25-day stage can destroy at most that stage's value added, not a full year's
-    #. The amplification loss is then eta * casc_scale * Delta =
-    # eta * VA_nst * g_s(u_nst): with eta = 1 the loss is the sector's stage value
-    # added times its inoperability g_s(u), the standard IIM output loss.
+    # Value-added base for the amplification term: stage value added of the country-sector,
+    # VA_nst = GDP_n * VA_SHARE_s * (SD/365), in dollar-million units (GDP in $B, times 1000).
+    # Scaling annual value added to the stage keeps the loss time-consistent, so the
+    # amplification loss eta * casc_scale * Delta = eta * VA_nst * g_s(u) is the standard IIM
+    # output loss at eta = 1.
     def _va_base(n, s):
         c = network.countries.get(n)
         gdp_b = getattr(c, "gdp_B", 0.0) if c is not None else 0.0
@@ -1662,10 +1502,9 @@ def build_model(
     m.phi_floor = pyo.Param(m.K_PRIO, initialize=float(service_floor),
                             default=float(service_floor))
 
-    # Equity weight on the objective penalty of vulnerable countries' priority
-    # sectors (K_PRIO pairs). Raising it above 1 makes the planner prioritise
-    # vulnerable economies, tracing the efficiency-equity frontier. Reported
-    # tables always evaluate damage at the true penalties (pi_ns / eta_ns).
+    # Equity weight on the objective penalty of vulnerable countries' priority sectors
+    # (K_PRIO). Above 1 the planner prioritizes vulnerable economies, tracing the
+    # efficiency-equity frontier. Reported tables always evaluate at true penalties.
     prio_set = set(priority_pairs)
     m.equity_mult = pyo.Param(
         m.C, m.S,
@@ -1674,17 +1513,15 @@ def build_model(
         default=1.0,
     )
 
-    # ------------------------------------------------------------------
     # Variables
-    # ------------------------------------------------------------------
     m.x = pyo.Var(m.A, m.T, m.OMEGA, within=pyo.NonNegativeReals)   # arc flow
     m.q = pyo.Var(m.C, m.S, m.T, m.OMEGA, within=pyo.NonNegativeReals)  # served
     m.h = pyo.Var(m.C, m.S, m.T, m.OMEGA, within=pyo.NonNegativeReals)  # shortage
     m.r = pyo.Var(m.C, m.T, m.OMEGA, within=pyo.NonNegativeReals)   # reserve draw
     m.R = pyo.Var(m.C, m.T, m.OMEGA, within=pyo.NonNegativeReals)   # reserve level
     m.g = pyo.Var(m.C, m.T, m.OMEGA, within=pyo.NonNegativeReals)   # substitute supply (total)
-    # P6 sub-instruments: product-stock release, refinery-yield
-    # reallocation, inter-fuel switching, plus the depleting product-stock level.
+    # P6 sub-instruments: product-stock release, refinery-yield reallocation, inter-fuel
+    # switching, plus the depleting product-stock level.
     m.g_ps = pyo.Var(m.C, m.T, m.OMEGA, within=pyo.NonNegativeReals)
     m.g_rf = pyo.Var(m.C, m.T, m.OMEGA, within=pyo.NonNegativeReals)
     m.g_fs = pyo.Var(m.C, m.T, m.OMEGA, within=pyo.NonNegativeReals)
@@ -1692,13 +1529,10 @@ def build_model(
     m.base = pyo.Var(m.C, m.T, m.OMEGA, within=pyo.NonNegativeReals)  # baseline supply
     m.y = pyo.Var(m.A_ALT, m.T, m.OMEGA, within=pyo.NonNegativeReals)  # bypass flow
     m.rho = pyo.Var(m.C, m.S, m.T, m.OMEGA, within=pyo.NonNegativeReals)  # demand red (total)
-    # The coalition moderates the world price purely from the demand side, through
-    # coordinated demand restraint (conservation). Reserves and substitute supply are
-    # domestic coping that meet a country's own shortfall and do not add crude to the
-    # world market, so they carry no price effect. Conservation, by contrast, is a
-    # conserved demand withdrawal: the barrels the coalition does not consume are ones
-    # it does not draw from the tight world market, so they stay available to the rest
-    # of the world and ease the price, with every barrel accounted for once.
+    # The coalition moderates the world price only through demand-side conservation: the
+    # barrels it does not consume stay available to the rest of the world and ease the price.
+    # Reserves and substitute supply meet a country's own shortfall and add no crude to the
+    # world market, so they carry no price effect.
     m.z = pyo.Var(m.P, m.T, m.OMEGA, within=pyo.Binary)             # policy on/off
     m.fslack = pyo.Var(m.K_PRIO, m.T, m.OMEGA, within=pyo.NonNegativeReals)  # priority-floor breach
 
@@ -1706,16 +1540,15 @@ def build_model(
         m.Delta = pyo.Var(m.C, m.S, m.T, m.OMEGA, within=pyo.NonNegativeReals)
         m.u_stress = pyo.Var(m.C, m.S, m.T, m.OMEGA, within=pyo.NonNegativeReals)
 
-    # The oil-price premium dP_{t,w} is defined below, once gross_disruption and
-    # global spare capacity are in scope. It is levied on served oil q, so it
-    # needs the exogenous world-supply loss, not the endogenous shortfall.
+    # The oil-price premium dP_{t,w} is defined below, once gross_disruption and global spare
+    # capacity are in scope. Levied on served oil q, so it needs the exogenous world-supply
+    # loss, not the endogenous shortfall.
     world_supply_stage = WORLD_OIL_SUPPLY_MBD * SD
 
-    # Sector-specific price-contraction weights kappa_s, rescaled by
-    # one factor so the demand-weighted mean is 1. This keeps the coalition-wide
-    # contraction (and hence the deadweight and market clearing) exactly as in the
-    # uniform case while redistributing incidence toward elastic sectors. The realized
-    # contraction of sector (n,s) is kappa_s * price_loss / world_supply_stage.
+    # Sector-specific price-contraction weights kappa_s, rescaled so the demand-weighted mean
+    # is 1, keeping the coalition-wide contraction (and the deadweight) as in the uniform case
+    # while redistributing incidence toward elastic sectors. Realized contraction of (n,s) is
+    # kappa_s * price_loss / world_supply_stage.
     _D_s = {s: sum(pyo.value(m.demand[n, s, t]) for n in m.C for t in stages)
             for s in SECTORS}
     _tot_D = sum(_D_s.values())
@@ -1724,29 +1557,23 @@ def build_model(
         m.S, initialize={s: PRICE_CONTRACTION_WEIGHT[s] / max(_wmean, 1e-9)
                          for s in SECTORS}, default=1.0)
 
-    # Regional cascade-intensity scale, renormalized to a demand-weighted
-    # mean of 1 so the aggregate calibrated intensity is unchanged and only its
-    # regional incidence differs. Applied to beta in the stress constraint below.
+    # Regional cascade-intensity scale, renormalized to a demand-weighted mean of 1 so the
+    # aggregate intensity is unchanged and only its regional incidence differs. Applied to
+    # beta in the stress constraint below.
     _Dn = {n: sum(pyo.value(m.demand[n, s, t]) for s in m.S for t in stages) for n in m.C}
     _rraw = {n: cascade_region_scale(n) for n in m.C}
     _rmean = sum(_rraw[n] * _Dn[n] for n in m.C) / max(sum(_Dn.values()), 1e-9)
     m.region_cascade_scale = pyo.Param(
         m.C, initialize={n: _rraw[n] / max(_rmean, 1e-9) for n in m.C}, default=1.0)
 
-    # Gross UNIQUE supply removed from the world market per stage/scenario (Mbbl).
-    # When several chokepoints on the same corridor close together
-    # (Hormuz, Bab el-Mandeb, Suez), a Gulf-to-Europe barrel traverses them
-    # SEQUENTIALLY, so summing the raw passage throughputs counts that barrel up to
-    # three times. We instead count each baseline barrel exactly once as the CUT
-    # INFLOW into the disrupted set: crude that enters the set from a non-disrupted
-    # origin (a source or an open chokepoint), summed over the normal (non-bypass,
-    # non-sharing) arcs crossing the cut. A barrel already inside the set that relays
-    # from one closed passage to another has a disrupted origin and is therefore not
-    # recounted. The cut inflow is capped at the set's total calibrated throughput as
-    # a consistency bound (an entry arc's nameplate capacity can exceed the receiving
-    # passage's EIA throughput). For a single closure this reduces to that passage's
-    # throughput, for {Hormuz, Bab el-Mandeb, Suez} it is 24.5 mbd, not the naive
-    # 32.2 mbd. _assert_unique_barrel (preflight) checks no barrel is counted twice.
+    # Gross unique supply removed from the world market per stage/scenario (Mbbl). When
+    # coupled passages close together (Hormuz, Bab el-Mandeb, Suez), a Gulf-to-Europe barrel
+    # traverses them sequentially, so summing raw throughputs triple-counts it. Instead count
+    # each baseline barrel once as the cut inflow into the disrupted set: crude entering from
+    # a non-disrupted origin over normal (non-bypass, non-sharing) arcs. Capped at the set's
+    # total calibrated throughput as a consistency bound. Single closure reduces to that
+    # passage's throughput. {Hormuz, Bab, Suez} = 24.5 mbd, not the naive 32.2 mbd.
+    # _assert_unique_barrel (preflight) checks no barrel is counted twice.
     _throughput_sum = sum(network.chokepoints[cp].throughput_mbd
                           for cp in _disrupted if cp in network.chokepoints)
     _cut_inflow = sum(
@@ -1754,7 +1581,7 @@ def build_model(
         if (not a.is_bypass) and (not getattr(a, "is_sharing", False))
         and (a.destination in _disrupted) and (a.origin not in _disrupted))
     _unique_disruption_rate = min(_cut_inflow, _throughput_sum)
-    # Exposed for the automated unique-barrel accounting test and for reporting.
+    # Exposed for the unique-barrel accounting test and reporting.
     m._unique_disruption_rate = float(_unique_disruption_rate)
     m._naive_throughput_sum = float(_throughput_sum)
 
@@ -1765,33 +1592,21 @@ def build_model(
                                    default=0.0)
     m.spare_stage = float(GLOBAL_SPARE_CAPACITY_MBD * SD)
 
-    # Oil-price welfare cost (deadweight). The world price rises with the residual
-    # GLOBAL market imbalance: the gross supply removed at the disrupted passages,
-    # net of every action that returns crude to the world market or withdraws demand
-    # from it. Three channels moderate the price, each counted once: (i) global spare
-    # production, (ii) crude coordinated rerouting ACTUALLY returns on the escape arcs
-    # (realized flow, not the installed ceiling, each rerouted barrel crosses exactly
-    # one escape arc, so the sum over escape arcs is a cut-set), and (iii) the
-    # coalition's managed demand reduction (conservation), a conserved demand
-    # withdrawal whose un-consumed barrels stay available to the rest of the world.
-    # Reserves and substitute supply are domestic coping that meet a country's own
-    # shortfall and add no crude to the world market, so they carry no price effect
-    # and no barrel is both consumed at home and credited to the market. This is the
-    # market-clearing reduced form: net imbalance = disrupted unique barrels - spare
-    # - rerouted - conservation. We close the world market with an isoelastic inverse
-    # demand
-    # P(Q)=P0 (Q/Qbar)^(-1/|eta|): a net loss dQ raises the price by
-    # dP/P0 = (1/|eta|) dQ/Qbar and contracts consumption, so the world clears at the
-    # reduced quantity. The REAL resource cost of the price channel is then the
-    # deadweight triangle DWL = 1/2 dP dQ_coalition, NOT the full terms-of-trade
-    # transfer (which is a redistribution to producers, reported separately in
-    # analysis). The objective charges only this deadweight. It is convex quadratic
-    # in the realized net loss, linearized exactly from below by its tangents at a
-    # grid of breakpoints, so the program stays an exact MILP.
+    # Oil-price welfare cost (deadweight). The world price rises with the residual global
+    # imbalance = gross supply removed, net of three channels each counted once: (i) global
+    # spare production, (ii) realized rerouting on the escape arcs (a cut-set, so each barrel
+    # counts once), (iii) the coalition's conservation. Reserves and substitute supply are
+    # domestic coping and carry no price effect. Net imbalance = disrupted unique barrels -
+    # spare - rerouted - conservation. Closing with isoelastic inverse demand
+    # P(Q) = P0 (Q/Qbar)^(-1/|eta|), a net loss dQ raises the price by dP/P0 =
+    # (1/|eta|) dQ/Qbar. The real resource cost is the deadweight triangle
+    # DWL = 1/2 dP dQ_coalition, not the full terms-of-trade transfer (a producer
+    # redistribution reported separately). Convex quadratic, tangent-linearized from below,
+    # so the program stays an exact MILP.
     _Q0_stage = {t: sum(pyo.value(m.demand[n, s, t]) for n in m.C for s in m.S)
                  for t in stages}
-    # Terms-of-trade transfer coefficient dP*Q0 (retained for post-solve reporting
-    # of importer expenditure and the producer transfer, not in the objective).
+    # Terms-of-trade transfer coefficient dP*Q0 (post-solve reporting of importer expenditure
+    # and the producer transfer, not in the objective).
     m.price_coef = pyo.Param(
         m.T,
         initialize={t: (BASELINE_OIL_PRICE * _Q0_stage[t]
@@ -1807,21 +1622,17 @@ def build_model(
                     for t in stages},
         default=0.0)
 
-    # Realized net world-supply loss (Mbbl/stage). A free non-negative variable
-    # bounded below by gross disruption net of spare capacity and realized
-    # rerouting, at the optimum it equals max(0, gross - spare - rerouted).
+    # Realized net world-supply loss (Mbbl/stage). Free non-negative variable bounded below
+    # by gross disruption net of spare and realized rerouting, equal at the optimum to
+    # max(0, gross - spare - rerouted).
     m.price_loss = pyo.Var(m.T, m.OMEGA, within=pyo.NonNegativeReals)
 
-    # Material-balance closure. Where the gross disruption net of
-    # spare capacity exceeds the total escape (bypass) capacity, the residual world
-    # imbalance is unabsorbable by rerouting alone, so the price rations it exactly and
-    # price_loss is PINNED by equality (below), with the induced demand contraction
-    # netted out of the country balances (see demand_balance_con). This closes the
-    # market in one balance and removes any incentive to inflate the price: a barrel
-    # cannot count as both an involuntary shortage and an uncounted price-induced
-    # contraction. Rerouting and coordinated conservation
-    # all lower the residual and hence the contraction. Where rerouting alone can
-    # absorb the loss we keep the one-sided bound (the deadweight pins it to max(0,.)).
+    # Material-balance closure. Where gross disruption net of spare exceeds total escape
+    # capacity, the residual is unabsorbable by rerouting, so the price rations it exactly and
+    # price_loss is pinned by equality (below), with the induced contraction netted out of the
+    # country balances. A barrel cannot count as both an involuntary shortage and an uncounted
+    # price-induced contraction. Where rerouting alone can absorb the loss we keep the
+    # one-sided bound (the deadweight pins it to max(0,.)).
     _escape_cap_total = float(sum(
         network.chokepoints[cp].bypass_capacity_mbd for cp in _disrupted
         if cp in network.chokepoints) * SD)
@@ -1830,12 +1641,10 @@ def build_model(
                for t in stages for w in m.OMEGA}
     m._net_ok = _net_ok
 
-    # Decentralization control (Management Science coordination analysis). The price-
-    # moderating demand-side action (coordinated conservation) is a PUBLIC GOOD: it
-    # lowers the world price for every importer. Only the coordinating set internalizes
-    # this. The planner is the full set, the atomistic price-taking benchmark is the
-    # empty set (structural price only), a strict subset is partial coordination, used
-    # for the cooperative-game value.
+    # Decentralization control. Coordinated conservation is a public good, lowering the world
+    # price for every importer, but only the coordinating set internalizes it. Planner = full
+    # set, atomistic price-taking benchmark = empty set (structural price only), strict subset
+    # = partial coordination for the cooperative-game value.
     if not coordinated_price:
         _coord = set()
     elif coordinating_countries is None:
@@ -1844,13 +1653,11 @@ def build_model(
         _coord = set(coordinating_countries) & set(m.C)
     m._coord_set = _coord
 
-    # Channel-specific market-displacement of domestic coping. By
-    # default reserve draws and substitute supply meet a country's own cut shortfall and
-    # displace no world-market purchase (phi=0, the headline). Setting a positive
-    # coefficient lets a share of each channel's volume also reduce world demand, so it
-    # moderates the price like conservation: it enters the incentive residual for the
-    # coordinating set and the physical residual for all importers. Cases phi in
-    # {0, 0.5, 1} span zero, partial, and one-for-one displacement.
+    # Channel-specific market-displacement of domestic coping. Default: reserve draws and
+    # substitute supply meet a country's own shortfall and displace no world-market purchase
+    # (phi=0, the headline). A positive coefficient lets a share of each channel's volume also
+    # reduce world demand, moderating the price like conservation. phi in {0, 0.5, 1} spans
+    # zero, partial, and one-for-one displacement.
     _disp = displacement or {}
     _phi = {k: float(_disp.get(k, 0.0))
             for k in ("reserve", "product_stock", "refinery", "fuel_switch")}
@@ -1869,39 +1676,29 @@ def build_model(
     def price_loss_def(m, t, w):
         if not enable_price:
             return m.price_loss[t, w] <= 0.0
-        # Net world market imbalance = gross - spare - realized rerouting
-        #   - reserves released to market - substitute released to market
-        #   - managed demand reduction (conservation, in physical barrels),
-        # where only the coordinating set's demand-side actions moderate the price.
+        # Net imbalance = gross - spare - rerouting - displaced coping - conservation, with
+        # only the coordinating set's demand-side actions moderating the price.
         conservation = sum(m.rho[n, s, t, w] * m.demand[n, s, t]
                            for n in _coord for s in m.S)
         rhs = (m.gross_disruption[t, w] - m.spare_stage
                - sum(m.x[a, t, w] for a in _escape_aids)
                - conservation - _displaced(_coord, t, w))
-        # Market-clearing PIN. Where the loss is structurally unabsorbable, the price
-        # rations EXACTLY the residual imbalance, so price_loss == rhs (equality). This
-        # is essential: a one-sided bound would let the planner inflate price_loss for
-        # free and reclassify costly hard shortage as cheap price-rationing. Because
-        # price_loss >= 0 (domain), the equality also caps the market-facing response
-        # at the physical loss (no barrel creates a below-baseline price surplus).
-        # Where rerouting alone can absorb the loss, we keep the one-sided bound (the
-        # deadweight pins price_loss to max(0, rhs)) and net no contraction.
+        # Market-clearing pin. Where the loss is unabsorbable, the price rations exactly the
+        # residual, so price_loss == rhs. A one-sided bound would let the planner inflate
+        # price_loss for free and reclassify hard shortage as cheap price-rationing. Where
+        # rerouting can absorb the loss, keep the one-sided bound (deadweight pins to
+        # max(0, rhs)) and net no contraction.
         if _net_ok[(t, w)]:
             return m.price_loss[t, w] == rhs
         return m.price_loss[t, w] >= rhs
     m.con_price_loss = pyo.Constraint(m.T, m.OMEGA, rule=price_loss_def)
 
-    # Physical market residual. price_loss above keeps only the
-    # coordinating set's conservation and enters the OBJECTIVE deadweight: it is the
-    # price moderation a price-taking importer does not internalize when choosing its own
-    # restraint. But a realized managed reduction physically lowers world demand
-    # regardless of who chose it, so the PHYSICAL residual nets out EVERY importer's
-    # conservation. It drives the consumption contraction (demand balance and priority
-    # floor below) and the reported deadweight and terms-of-trade transfer. For the
-    # planner (coordinating set = all importers) the two residuals coincide, so the
-    # headline is unchanged, the atomistic and partial-coalition benchmarks now clear
-    # physically on the reductions they actually select, while only the coordinating set
-    # internalizes the price effect of its own reductions.
+    # Physical market residual. price_loss above keeps only the coordinating set's
+    # conservation and enters the objective deadweight (the price moderation a price-taker
+    # does not internalize). A realized reduction physically lowers world demand regardless of
+    # who chose it, so the physical residual nets out every importer's conservation, driving
+    # the consumption contraction and the reported transfer. The two residuals coincide for
+    # the planner, so the headline is unchanged.
     m.price_loss_phys = pyo.Var(m.T, m.OMEGA, within=pyo.NonNegativeReals)
 
     def price_loss_phys_def(m, t, w):
@@ -1917,26 +1714,24 @@ def build_model(
         return m.price_loss_phys[t, w] >= rhs
     m.con_price_loss_phys = pyo.Constraint(m.T, m.OMEGA, rule=price_loss_phys_def)
 
-    # Deadweight welfare loss, PWL-linearized from below by the tangents of the
-    # convex quadratic c_t (dQ)^2 at NBP+1 breakpoints spanning [0, dQ_max].
+    # Deadweight welfare loss, PWL-linearized from below by the tangents of the convex
+    # quadratic c_t (dQ)^2 at NBP+1 breakpoints spanning [0, dQ_max].
     m.dwl = pyo.Var(m.T, m.OMEGA, within=pyo.NonNegativeReals)
     _dq_max = max([pyo.value(m.gross_disruption[t, w])
                    for t in stages for w in m.OMEGA] + [1.0])
-    # Breakpoint count for the deadweight tangent grid. Configurable via the
-    # environment so a grid-refinement test can double it without
-    # touching the default 12-breakpoint headline configuration.
+    # Breakpoint count for the deadweight tangent grid, env-configurable so a grid-refinement
+    # test can double it without touching the 12-breakpoint headline.
     _NBP = int(os.environ.get("GEOENERGY_DWL_NBP", "12"))
     _bp = [_dq_max * k / _NBP for k in range(_NBP + 1)]
     m.BP = pyo.RangeSet(0, _NBP)
     m._dwl_bp = list(_bp)  # breakpoints for post-solve PWL deadweight on the physical residual
 
-    # Isoelastic (constant-elasticity) price benchmark. The
-    # market clears at the same reduced quantity in either curve, so only the price, and
-    # hence the deadweight area and the transfer, differ. With P(q)=P0 (q/Qbar)^{-eps},
-    # eps=1/|eta|, the coalition deadweight for a fractional loss f=dQ/Qbar is
-    # P0 Q0 [ (1-(1-f)^{1-eps})/(1-eps) - f ], convex and increasing, tangent-linearized
-    # from below exactly like the linear-demand quadratic. eps>1 (|eta|<1) makes it
-    # steeper than the linear form, so the linear channel understates the price move.
+    # Isoelastic (constant-elasticity) price benchmark. The market clears at the same reduced
+    # quantity in either curve, so only the price (and the deadweight area and transfer)
+    # differ. With P(q)=P0 (q/Qbar)^{-eps}, eps=1/|eta|, the coalition deadweight for a
+    # fractional loss f=dQ/Qbar is P0 Q0 [ (1-(1-f)^{1-eps})/(1-eps) - f ], convex increasing,
+    # tangent-linearized like the linear-demand quadratic. eps>1 makes it steeper, so the
+    # linear channel understates the price move.
     m._price_curve = str(price_curve)
     _eps = 1.0 / abs(OIL_DEMAND_ELASTICITY)
     _P0 = BASELINE_OIL_PRICE
@@ -1956,16 +1751,13 @@ def build_model(
         return m.dwl[t, w] >= 2.0 * c * q_k * m.price_loss[t, w] - c * q_k ** 2
     m.con_dwl = pyo.Constraint(m.T, m.OMEGA, m.BP, rule=dwl_tangent)
 
-    # ------------------------------------------------------------------
     # Objective
-    # ------------------------------------------------------------------
     # Per-scenario total cost C_w (all stages), unweighted by probability.
     def scenario_cost_expr(w):
         expr = 0.0
         for t in m.T:
-            # Sea-freight / war-risk premium scales with severity (1 -
-            # availability) on maritime legs. Pipelines and last-mile delivery
-            # are billed at base cost.
+            # Sea-freight / war-risk premium scales with severity (1 - availability) on
+            # maritime legs. Pipelines and last-mile delivery bill at base cost.
             expr += sum((m.mar_mult[t, w] if a in _maritime else 1.0)
                         * m.arc_cost[a] * m.x[a, t, w] for a in m.A)
             expr += sum(m.gamma[p] * m.z[p, t, w] for p in m.P)
@@ -1979,37 +1771,32 @@ def build_model(
                             for n in m.C for s in m.S)
             expr += FLOOR_PENALTY * sum(m.fslack[n, s, t, w]
                                         for (n, s) in m.K_PRIO)
-            # Managed demand (C6): the efficiency share (EFFICIENCY_FRAC of the
-            # reduction) is cheap abatement priced at a fraction of the crude price;
-            # the rationing share (the remainder) is an unmet need priced like a
-            # direct shortage (pi_ns) and propagated to dependent sectors through the
-            # stress term above.
+            # Managed demand (C6): the efficiency share is cheap abatement priced at a
+            # fraction of the crude price, the rationing share is an unmet need priced like a
+            # direct shortage (pi_ns) and propagated to dependent sectors via the stress term.
             expr += sum(
                 (EFFICIENCY_COST_FRAC * BASELINE_OIL_PRICE * EFFICIENCY_FRAC
                  + m.equity_mult[n, s] * m.pi_ns[n, s] * (1.0 - EFFICIENCY_FRAC))
                 * m.rho[n, s, t, w] * m.demand[n, s, t]
                 for n in m.C for s in m.S)
-            # Replacement/opportunity cost of reserve draws: a
-            # released barrel must be repurchased and forgoes its option value, so
-            # reserve release is no longer free.
+            # Replacement/opportunity cost of reserve draws, so reserve release is not free.
             expr += RESERVE_REPLACEMENT_COST * sum(m.r[n, t, w] for n in m.C)
-            # Variable resource cost of emergency substitute supply:
-            # each substitute barrel draws down product stocks, reconfigures refinery
-            # yield, or switches fuel at a real marginal cost, so P6 is no longer an
-            # almost-free bulk source beyond its activation charge.
+            # Variable resource cost of substitute supply: each barrel draws down product
+            # stocks, reconfigures refinery yield, or switches fuel, so P6 is not free beyond
+            # its activation charge.
             expr += sum(SUBSTITUTE_COST_PS * m.g_ps[n, t, w]
                         + SUBSTITUTE_COST_RF * m.g_rf[n, t, w]
                         + SUBSTITUTE_COST_FS * m.g_fs[n, t, w] for n in m.C)
         return expr
 
-    # Inert per-scenario cost expression, exposed for post-solve loss-distribution
-    # and CVaR reporting. Not referenced by the objective, so results are unchanged.
+    # Inert per-scenario cost expression, exposed for post-solve loss-distribution and CVaR
+    # reporting. Not referenced by the objective, so results are unchanged.
     m.scenario_cost = pyo.Expression(m.OMEGA,
                                      rule=lambda mm, w: scenario_cost_expr(w))
 
-    # Decision-dependent uncertainty is active only when the full coordinated
-    # bundle can be fielded. Otherwise probabilities stay at the unresponsive
-    # baseline (m.prob) and the objective is the ordinary expectation.
+    # Decision-dependent uncertainty is active only when the full coordinated bundle can be
+    # fielded. Otherwise probabilities stay at the unresponsive baseline (m.prob) and the
+    # objective is the ordinary expectation.
     bundle = list(DEESCALATION_BUNDLE)
     ddu_active = endogenous_uncertainty and all(p in policy_subset for p in bundle)
     m.ddu_active = ddu_active
@@ -2019,18 +1806,16 @@ def build_model(
             return sum(m.prob[w] * scenario_cost_expr(w) for w in m.OMEGA)
         m.OBJ = pyo.Objective(rule=obj_rule, sense=pyo.minimize)
     else:
-        # Endogenous probabilities: p_w(d) = prod_t (a_t + b_t d_{t,w}), with
-        # d_{t,w} = 1 iff the coordinated bundle is active at stage t on w's
-        # path. Expanding gives a multilinear form in the binary d's, and each
-        # monomial times the bounded cost C_w is linearized exactly.
+        # Endogenous probabilities: p_w(d) = prod_t (a_t + b_t d_{t,w}), with d_{t,w} = 1 iff
+        # the bundle is active at stage t on w's path. Expanding gives a multilinear form in
+        # the binary d's, each monomial times the bounded cost C_w linearized exactly.
         unresp = transition_matrix(unresponsive_regime)
         resp = responsive_matrix(unresp)
         n_edges = NUM_STAGES - 1
         dstages = list(range(n_edges))
 
-        # De-escalation indicator d_{t,w}, the logical AND of the bundle's
-        # activation at stage t. Non-anticipativity on z makes indicators that
-        # share history equal automatically.
+        # De-escalation indicator d_{t,w}, the logical AND of the bundle's activation at stage
+        # t. Non-anticipativity on z makes indicators sharing history equal automatically.
         m.DSTG = pyo.Set(initialize=dstages)
         m.BIDX = pyo.Set(initialize=list(range(len(bundle))))
         m.dd = pyo.Var(m.DSTG, m.OMEGA, within=pyo.Binary)
@@ -2051,8 +1836,8 @@ def build_model(
         m.con_Cw = pyo.Constraint(
             m.OMEGA, rule=lambda m, w: m.Cw[w] == scenario_cost_expr(w))
 
-        # Build, per scenario, the monomials (subsets of its edges with |S|>=2)
-        # and the McCormick products v_{w,S} = (prod_{t in S} d_{t,w}) * C_w.
+        # Per scenario, the monomials (edge subsets with |S|>=2) and the McCormick products
+        # v_{w,S} = (prod_{t in S} d_{t,w}) * C_w.
         from itertools import combinations
         mono_keys = []      # (w, frozenset(S)) for |S|>=2  (AND-linearized)
         prod_keys = []      # (w, frozenset(S)) for |S|>=1  (McCormick product)
@@ -2115,9 +1900,7 @@ def build_model(
             return total
         m.OBJ = pyo.Objective(rule=obj_rule, sense=pyo.minimize)
 
-    # ------------------------------------------------------------------
     # Constraints
-    # ------------------------------------------------------------------
     # Source capacity
     def source_cap_con(m, e, t, w):
         out_arcs = [a.aid for a in network.out_arcs.get(e, []) if a.aid in set(m.A)]
@@ -2136,9 +1919,8 @@ def build_model(
                 sum(m.x[a, t, w] for a in out_a))
     m.con_transship = pyo.Constraint(m.J, m.T, m.OMEGA, rule=transship_con)
 
-    # Country balance. Only the DOMESTIC part of each reserve/substitute draw
-    # (total draw net of the part released to the world market) stays in the country
-    # to meet its own sectors. Reserves and substitute supply are consumed at home.
+    # Country balance. Reserves and substitute supply are consumed at home to meet the
+    # country's own sectors.
     def country_balance_con(m, n, t, w):
         in_a = [a.aid for a in network.in_arcs.get(n, []) if a.aid in set(m.A)]
         out_a = [a.aid for a in network.out_arcs.get(n, []) if a.aid in set(m.A)]
@@ -2158,22 +1940,19 @@ def build_model(
         d = m.demand[n, s, t]
         if d <= 1e-10:
             return pyo.Constraint.Skip
-        # Price-induced demand contraction (C2), netted out of the physical
-        # requirement where price_loss is pinned by equality. The common contraction
-        # fraction is |eta| dP/P0 = price_loss/Qbar, scaled by the sector weight
-        # kappa_s so elastic sectors cut more and essential sectors less;
-        # the demand-weighted mean of kappa_s is 1, so the coalition contraction and
-        # the deadweight are unchanged. Its forgone consumer surplus is the deadweight
-        # already in the objective, so the two are reconciled and no barrel is double-
-        # counted. Linear because d and kappa_s are parameters.
+        # Price-induced contraction (C2), netted out of the physical requirement where
+        # price_loss is pinned by equality. Common contraction fraction |eta| dP/P0 =
+        # price_loss/Qbar, scaled by kappa_s (demand-weighted mean 1, so coalition contraction
+        # and deadweight unchanged). Its forgone consumer surplus is the deadweight already in
+        # the objective, so no barrel is double-counted. Linear since d and kappa_s are params.
         contraction = (m.kappa_contract[s] * m.price_loss_phys[t, w] / world_supply_stage) \
             if (enable_price and m._net_ok[(t, w)]) else 0.0
         return (m.q[n, s, t, w] + m.h[n, s, t, w]
                 == d * (1 - m.rho[n, s, t, w] - contraction))
     m.con_demand = pyo.Constraint(m.C, m.S, m.T, m.OMEGA, rule=demand_balance_con)
 
-    # Arc capacity. Nominal arcs are bounded by surviving capacity, bypass and
-    # sharing arcs carry flow only up to the policy-mobilized capacity y.
+    # Arc capacity. Nominal arcs bounded by surviving capacity, bypass and sharing arcs carry
+    # flow only up to the policy-mobilized capacity y.
     def arc_cap_con(m, a, t, w):
         arc = arc_dict[a]
         if arc.is_bypass or arc.is_sharing:
@@ -2185,9 +1964,8 @@ def build_model(
             return m.x[a, t, w] <= cap
     m.con_arc_cap = pyo.Constraint(m.A, m.T, m.OMEGA, rule=arc_cap_con)
 
-    # Mobilized capacity on the alternative arcs (Mbbl per stage): sharing arcs
-    # unlocked by P5, rerouting/bypass arcs unlocked by P2, plus the irreversible
-    # diversification investment P4 which adds DIVERSIFICATION_FACTOR of the arc
+    # Mobilized capacity on the alternative arcs (Mbbl per stage): sharing arcs unlocked by
+    # P5, bypass arcs by P2, plus P4 (irreversible) adding DIVERSIFICATION_FACTOR of arc
     # capacity from stage DIVERSIFICATION_STAGE onward.
     def alt_cap_con(m, a, t, w):
         arc = arc_dict[a]
@@ -2206,8 +1984,8 @@ def build_model(
         return m.y[a, t, w] <= sum(terms)
     m.con_bypass = pyo.Constraint(m.A_ALT, m.T, m.OMEGA, rule=alt_cap_con)
 
-    # Emergency substitute supply linked to policy P6, disaggregated into three
-    # sub-instruments. Total substitute is their sum.
+    # Emergency substitute supply (P6), disaggregated into three sub-instruments. Total is
+    # their sum.
     def substitute_total_con(m, n, t, w):
         return m.g[n, t, w] == m.g_ps[n, t, w] + m.g_rf[n, t, w] + m.g_fs[n, t, w]
     m.con_substitute_total = pyo.Constraint(m.C, m.T, m.OMEGA, rule=substitute_total_con)
@@ -2218,10 +1996,9 @@ def build_model(
         return base * SUBSTITUTE_CHANNEL_SHARE[chan]
 
     _P6 = "P6" in policy_subset
-    # Restricted-P6 bound: only the universally available
-    # commercial product-stock channel is enabled, refinery-yield reallocation and
-    # fuel switching, which need country-specific refining and dual-fired capacity,
-    # are switched off.
+    # Restricted-P6 bound: only the universally available product-stock channel is enabled.
+    # Refinery-yield reallocation and fuel switching (needing country-specific refining and
+    # dual-fired capacity) are switched off.
     _P6_rf_fs = _P6 and not restrict_substitute
 
     # Refinery-yield reallocation and fuel switching: per-stage capacity, gated by P6.
@@ -2237,8 +2014,8 @@ def build_model(
         return m.g_fs[n, t, w] <= 0
     m.con_g_fs = pyo.Constraint(m.C, m.T, m.OMEGA, rule=g_fs_cap)
 
-    # Product-stock release: per-stage rate gated by P6 AND bounded by a FINITE
-    # inventory that depletes as it is drawn (like the strategic reserve).
+    # Product-stock release: per-stage rate gated by P6 and bounded by a finite inventory that
+    # depletes as drawn (like the strategic reserve).
     def g_ps_rate(m, n, t, w):
         if _P6:
             return m.g_ps[n, t, w] <= _ss_cap(n, "ps") * m.z["P6", t, w]
@@ -2246,9 +2023,9 @@ def build_model(
     m.con_g_ps_rate = pyo.Constraint(m.C, m.T, m.OMEGA, rule=g_ps_rate)
 
     def ps_init(m, n, w):
-        # Fixed inventory in barrels (PRODUCT_STOCK_DAYS of daily release capacity),
-        # independent of the stage length. _ss_cap is the per-stage flow (daily x SD),
-        # so dividing by SD recovers the daily rate before scaling by the fixed days.
+        # Fixed inventory (PRODUCT_STOCK_DAYS of daily release capacity), independent of stage
+        # length. _ss_cap is the per-stage flow (daily x SD), so dividing by SD recovers the
+        # daily rate before scaling by the fixed days.
         return m.PS[n, 0, w] == _ss_cap(n, "ps") * (PRODUCT_STOCK_DAYS / SD)
     m.con_ps_init = pyo.Constraint(m.C, m.OMEGA, rule=ps_init)
 
@@ -2283,10 +2060,9 @@ def build_model(
         return m.R[n, t, w] >= 0
     m.con_reserve_nn = pyo.Constraint(m.C, m.T, m.OMEGA, rule=reserve_nonneg_con)
 
-    # Terminal stock: the final-stage draw cannot exceed the reserve left after
-    # it. There is no stage-T level variable, so without this the last draw would
-    # be bounded only by the per-stage rate and could deplete reserves that do
-    # not exist.
+    # Terminal stock: the final-stage draw cannot exceed the reserve left after it. With no
+    # stage-T level variable, the last draw would otherwise be bounded only by the per-stage
+    # rate and could deplete reserves that do not exist.
     def reserve_terminal_con(m, n, w):
         return m.R[n, NUM_STAGES - 1, w] - m.r[n, NUM_STAGES - 1, w] >= 0
     m.con_reserve_terminal = pyo.Constraint(m.C, m.OMEGA, rule=reserve_terminal_con)
@@ -2299,9 +2075,9 @@ def build_model(
     m.con_demand_red = pyo.Constraint(m.C, m.S, m.T, m.OMEGA, rule=demand_red_con)
 
 
-    # Physical escape cap: the realized rerouted flow per disrupted chokepoint
-    # cannot exceed that chokepoint's bypass capacity (Mbbl per stage). This binds
-    # the restored supply to what the alternative routes can actually carry.
+    # Physical escape cap: realized rerouted flow per disrupted chokepoint cannot exceed that
+    # chokepoint's bypass capacity (Mbbl per stage), binding restored supply to what the
+    # alternative routes can carry.
     dcp_with_escape = [cp for cp in _escape_by_cp]
     m.DCP = pyo.Set(initialize=dcp_with_escape)
 
@@ -2310,8 +2086,8 @@ def build_model(
         return sum(m.x[a, t, w] for a in _escape_by_cp[cp]) <= cap
     m.con_escape_cap = pyo.Constraint(m.DCP, m.T, m.OMEGA, rule=escape_cap_con)
 
-    # Stage budget: total activation cost per stage is capped. Skipped when no
-    # policy is available (empty sum).
+    # Stage budget: total activation cost per stage is capped. Skipped when no policy is
+    # available (empty sum).
     def budget_con(m, t, w):
         if len(list(m.P)) == 0:
             return pyo.Constraint.Skip
@@ -2325,21 +2101,17 @@ def build_model(
         return m.z[p, t, w] <= m.z[p, t + 1, w]
     m.con_irrev = pyo.Constraint(m.P_IRR, m.T, m.OMEGA, rule=irrev_con)
 
-    # Service floor: priority country-sector pairs (low-reserve countries'
-    # healthcare and electricity) must be served at least phi_floor of managed
-    # demand. Soft floor: breach slack fslack is heavily penalised (FLOOR_PENALTY),
-    # so the floor holds whenever oil can physically reach the country and relaxes
-    # only when the disruption makes it unreachable (e.g. simultaneous closures
-    # cutting the country off). Keeps the model feasible without weakening it.
+    # Service floor: priority pairs (low-reserve countries' healthcare and electricity) must
+    # be served at least phi_floor of managed demand. Soft floor, breach slack fslack heavily
+    # penalized (FLOOR_PENALTY), so it holds wherever oil can reach the country and relaxes
+    # only when the disruption cuts the country off. Keeps the model feasible.
     def floor_con(m, n, s, t, w):
         d = m.demand[n, s, t]
         if d <= 1e-10:
             return pyo.Constraint.Skip
-        # The floor is measured on the demand the sector actually faces AFTER both the
-        # managed reduction and the involuntary price contraction, so it
-        # uses the same base as the demand balance. The floor still guarantees a served
-        # minimum: it protects the essential core of a priority sector even where the
-        # sector's discretionary oil use is otherwise price-elastic.
+        # Measured on the demand the sector faces after both the managed reduction and the
+        # price contraction, so it uses the same base as the demand balance and still
+        # guarantees a served minimum for the essential core.
         contraction = (m.kappa_contract[s] * m.price_loss_phys[t, w] / world_supply_stage) \
             if (enable_price and m._net_ok[(t, w)]) else 0.0
         return (m.q[n, s, t, w] + m.fslack[n, s, t, w]
@@ -2368,18 +2140,13 @@ def build_model(
     m.con_nonant = pyo.Constraint(m.NONANT_FULL, rule=lambda m, p, t, w1, w2:
                                    m.z[p, t, w1] == m.z[p, t, w2])
 
-    # ------------------------------------------------------------------
     # Cascade amplification constraints
-    # ------------------------------------------------------------------
     if enable_cascade:
-        # Cross-sector stress (Inoperability Input-Output form): stress on sector
-        # s is the dependence-weighted sum, over the sectors s' it draws inputs
-        # from, of the fraction of s' left unserved. This is the involuntary
-        # shortfall h_{s'}/d_{s'} PLUS the forced-rationing share of managed demand
-        # reduction, (1 - EFFICIENCY_FRAC) rho_{s'} (C6): the efficiency share is
-        # genuine conservation that preserves output, but the rationing share
-        # starves downstream users exactly as an involuntary shortfall does. Using a
-        # fixed share avoids an extra variable per country-sector-stage-scenario.
+        # Cross-sector stress (Inoperability Input-Output form): stress on sector s is the
+        # dependence-weighted sum over supplier sectors s' of the fraction left unserved, the
+        # involuntary shortfall h_{s'}/d_{s'} plus the forced-rationing share
+        # (1 - EFFICIENCY_FRAC) rho_{s'} (C6), which starves downstream users like a shortfall.
+        # The fixed share avoids an extra variable per country-sector-stage-scenario.
         def stress_con(m, n, s, t, w):
             rscale = m.region_cascade_scale[n]
             expr = 0.0
@@ -2408,27 +2175,22 @@ def solve_model(
     time_limit: int = 3600,
     mip_gap: float = 1e-3,
 ) -> dict:
-    """Solve the model and return a summary dict (status, objective, solver,
-    result). time_limit is in seconds, mip_gap is the relative gap."""
+    """Solve the model and return a summary dict (status, objective, solver, result).
+    time_limit in seconds, mip_gap the relative gap."""
     solver = pyo.SolverFactory(solver_name)
     if solver_name in ("gurobi", "gurobi_direct", "appsi_gurobi"):
         solver.options['TimeLimit'] = time_limit
         solver.options['MIPGap'] = mip_gap
-        # Thread count drives peak memory (Gurobi replicates working data per
-        # thread), so two threads keep the peak small on the largest
-        # extensive-form solves. On the HPC (ample RAM) set GUROBI_THREADS higher
-        # for faster solves. Seed fixes the tie-breaks.
+        # Thread count drives peak memory (Gurobi replicates working data per thread), so two
+        # threads keep the peak small. On the HPC set GUROBI_THREADS higher. Seed fixes
+        # tie-breaks.
         solver.options['Threads'] = int(os.environ.get("GUROBI_THREADS", "2"))
         solver.options['Seed'] = 0
-        # Memory backstops, tuned for a memory-constrained host (see GUROBI_MEM_GB).
-        # Method=1 (dual simplex) avoids the barrier root factorization, which is the
-        # largest single memory consumer for this 235k-variable model. NodefileStart
-        # spills the branch-and-bound tree to disk aggressively, and SoftMemLimit (GB)
-        # makes Gurobi stop opening new nodes and return its best incumbent near the
-        # limit, degrading gracefully to a larger gap instead of crashing out of
-        # memory. Raise GUROBI_MEM_GB when more RAM is free for tighter, faster solves;
-        # on the HPC set GUROBI_METHOD=-1 (automatic, lets Gurobi pick barrier) since the
-        # factorization memory is no longer a constraint there.
+        # Memory backstops for a memory-constrained host (see GUROBI_MEM_GB). Method=1 (dual
+        # simplex) avoids the barrier root factorization, the largest memory consumer for this
+        # 235k-variable model. NodefileStart spills the branch-and-bound tree to disk, and
+        # SoftMemLimit (GB) makes Gurobi stop opening nodes and return its incumbent near the
+        # limit instead of crashing. On the HPC set GUROBI_METHOD=-1 to let Gurobi pick barrier.
         _mem_gb = float(os.environ.get("GUROBI_MEM_GB", "6.0"))
         solver.options['Method'] = int(os.environ.get("GUROBI_METHOD", "1"))
         solver.options['NodefileStart'] = 0.5
@@ -2440,8 +2202,7 @@ def solve_model(
         solver.options['tmlim'] = time_limit
         solver.options['mipgap'] = mip_gap
     elif "highs" in solver_name:
-        # HiGHS ('highs' / 'appsi_highs'): relative gap, time limit, and a node
-        # ceiling as a memory backstop.
+        # HiGHS: relative gap, time limit, and a node ceiling as a memory backstop.
         solver.options['time_limit'] = float(time_limit)
         solver.options['mip_rel_gap'] = mip_gap
         solver.options['mip_max_nodes'] = 2000000
@@ -2449,18 +2210,16 @@ def solve_model(
     result = solver.solve(model, tee=False)
 
     status = str(result.solver.termination_condition)
-    # Accept the incumbent even when the solver stopped at a resource limit. HiGHS
-    # reports ``maxTimeLimit`` while still holding a feasible solution, which at
-    # the 0.1% gap used here is a valid result. ``exception=False`` returns None
-    # when no solution was loaded (a genuine no-incumbent or infeasible solve).
+    # Accept the incumbent even when the solver stopped at a resource limit (HiGHS reports
+    # ``maxTimeLimit`` while holding a feasible solution, valid at the 0.1% gap here).
+    # ``exception=False`` returns None when no solution was loaded.
     _accept = ("optimal", "feasible", "locallyOptimal", "globallyOptimal",
                "maxTimeLimit", "maxIterations", "maxEvaluations", "other")
     obj_val = pyo.value(model.OBJ, exception=False) if status in _accept else None
 
-    # Best (dual) bound and the achieved relative optimality gap, retained so a
-    # downstream game solve can certify how far each objective may sit from its
-    # optimum. Read from the Pyomo results first, then fall back to
-    # the live Gurobi model. None when the solver does not expose a bound.
+    # Best (dual) bound and achieved relative gap, so a downstream game solve can certify how
+    # far each objective may sit from its optimum. Read from the Pyomo results first, then the
+    # live Gurobi model. None when the solver exposes no bound.
     best_bound = None
     try:
         pb = getattr(result, "problem", None)
@@ -2489,10 +2248,9 @@ def solve_model(
         "result": None,  # heavy Pyomo results object intentionally not retained
     }
 
-    # Bound memory across long solve loops. Persistent solvers
-    # (appsi_gurobi/appsi_highs) keep the loaded model alive, so we dispose the
-    # solver model and drop the solver. We deliberately do NOT release the Gurobi
-    # licence/env, since re-acquiring a WLS licence every solve is slow.
+    # Bound memory across long solve loops. Persistent solvers (appsi_gurobi/appsi_highs) keep
+    # the loaded model alive, so dispose the solver model and drop the solver. Do NOT release
+    # the Gurobi licence/env, since re-acquiring a WLS licence every solve is slow.
     try:
         sm = getattr(solver, "_solver_model", None)
         if sm is not None and hasattr(sm, "dispose"):
@@ -2505,9 +2263,7 @@ def solve_model(
     return out
 
 
-# ======================================================================
 # SOLVE: MIP wrapper and result cache
-# ======================================================================
 import gc
 import hashlib
 import json
@@ -2625,8 +2381,8 @@ class NoSolverAvailableError(RuntimeError):
 
 
 def _verify_solver(name: str) -> bool:
-    """Smoke-test a solver by solving a trivial LP. ``available()`` is unreliable
-    across Pyomo versions, especially APPSI interfaces."""
+    """Smoke-test a solver by solving a trivial LP. ``available()`` is unreliable across Pyomo
+    versions, especially APPSI interfaces."""
     try:
         m = pyo.ConcreteModel()
         m.x = pyo.Var(domain=pyo.NonNegativeReals, bounds=(0.0, 1.0))
@@ -2652,20 +2408,17 @@ _detected_solver: Optional[str] = None
 def _detect_solver(preferred: Optional[str] = None) -> str:
     """Return a verified-working solver, preferring Gurobi then HiGHS.
 
-    Raises NoSolverAvailableError with install instructions when nothing works,
-    instead of a generic Pyomo error deep in a notebook cell.
+    Raises NoSolverAvailableError with install instructions when nothing works.
     """
     global _detected_solver
     if preferred is not None:
-        # Honour explicit choice even if the smoke test fails. solve_mip
-        # surfaces the underlying error.
+        # Honor explicit choice even if the smoke test fails. solve_mip surfaces the error.
         return preferred
     if _detected_solver is not None:
         return _detected_solver
 
-    # appsi_gurobi uses fast bulk model loading. gurobi_direct loads
-    # variable-by-variable and is slow for large models, so it ranks later.
-    # Override via the ``preferred`` arg or GEOENERGY_SOLVER env var.
+    # appsi_gurobi uses fast bulk model loading. gurobi_direct loads variable-by-variable and
+    # is slow for large models, so it ranks later. Override via ``preferred`` or GEOENERGY_SOLVER.
     env_choice = os.environ.get("GEOENERGY_SOLVER")
     if env_choice:
         _detected_solver = env_choice
@@ -2762,8 +2515,7 @@ def solve_mip(policy_subset: Tuple[str, ...] = ALL_POLICIES,
     network = get_network()
     scenarios = get_scenarios(scenario_class, target_count, stage_days)
 
-    # Policies outside the subset are not added to ``m.P``, which is how
-    # build_model supports ablation.
+    # Policies outside the subset are not added to ``m.P`` (build_model's ablation hook).
     model = build_model(
         network, scenarios,
         disrupted_chokepoint=disrupted,
@@ -2788,8 +2540,8 @@ def solve_mip(policy_subset: Tuple[str, ...] = ALL_POLICIES,
                        time_limit=time_limit, mip_gap=mip_gap)
     elapsed = time.time() - t0
 
-    # Extract z*. Nonanticipativity fixes stage 0 across scenarios, but later
-    # stages may differ, so record the modal value per (policy, stage).
+    # Extract z*. Nonanticipativity fixes stage 0 across scenarios, but later stages may
+    # differ, so record the modal value per (policy, stage).
     z_star: Dict[str, int] = {}
     if info["objective"] is not None:
         for p in policy_subset:
@@ -2823,8 +2575,8 @@ def solve_mip(policy_subset: Tuple[str, ...] = ALL_POLICIES,
         print(f"  [{solver_name}] subset={policy_subset} "
               f"delay={delay_stages} time={elapsed:.1f}s obj={obj}")
 
-    # Solved models are large and hold reference cycles, so free them to bound
-    # RAM across long solve loops.
+    # Solved models are large and hold reference cycles, so free them to bound RAM across long
+    # solve loops.
     del model, info
     gc.collect()
 
@@ -2834,8 +2586,8 @@ def solve_mip(policy_subset: Tuple[str, ...] = ALL_POLICIES,
 def clear_cache(cache_dir: str = DEFAULT_CACHE_DIR) -> int:
     """Delete all cached MIP results. Returns count deleted.
 
-    Unlink failures are tolerated, so a file transiently locked by a sync client
-    (OneDrive) or another process does not abort the run.
+    Unlink failures are tolerated, so a file transiently locked by a sync client (OneDrive) or
+    another process does not abort the run.
     """
     p = Path(cache_dir)
     if not p.exists():
