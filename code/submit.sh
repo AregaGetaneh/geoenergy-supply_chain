@@ -66,5 +66,9 @@ trap cleanup EXIT
 
 echo "Experiment: ${EXPERIMENT}"
 echo "Job: ${LSB_JOBID}${LSB_JOBINDEX:+[${LSB_JOBINDEX}]}  Host: $(hostname)  Started: $(date)"
-python -u code/experiments.py "${EXPERIMENT}"
+if [ "${EXPERIMENT}" = "pipeline" ]; then
+    python -u code/pipeline.py
+else
+    python -u code/experiments.py "${EXPERIMENT}"
+fi
 echo "Finished: $(date)"
