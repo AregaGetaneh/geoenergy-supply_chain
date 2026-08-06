@@ -784,7 +784,7 @@ def cmd_robustness(args):
     FIXED_STAGE_COUNTS, e.g. 4,5,6). GEO_RESUME=1 skips any check whose CSV already
     exists."""
     COALITION_TC = int(os.environ.get("COALITION_TARGET_COUNT", "9"))
-    JOINT_DRAWS = int(os.environ.get("JOINT_DRAWS", "150"))
+    JOINT_DRAWS = int(os.environ.get("JOINT_DRAWS", "200"))
     FIXED_STAGE_COUNTS = tuple(int(x) for x in
                                os.environ.get("FIXED_STAGE_COUNTS", "4,5").split(","))
     print(f"[config] COALITION_TC={COALITION_TC}  JOINT_DRAWS={JOINT_DRAWS}  "
@@ -880,8 +880,8 @@ def cmd_robustness(args):
                                                  "closest_blocking_coalition")
                        if k in cs.attrs}, fh, indent=2)
 
-    # Heaviest check last: the Monte-Carlo joint uncertainty sweep. Reduce JOINT_DRAWS
-    # for a faster pass, 150 draws gives a stable 90% interval.
+    # Heaviest check last: the Monte-Carlo joint uncertainty sweep. The default 200
+    # draws matches the paper; reduce JOINT_DRAWS for a faster, approximate pass.
     def _joint():
         return joint_uncertainty_analysis(n_draws=JOINT_DRAWS)
     ju = _guard(f"Joint uncertainty (Monte-Carlo, {JOINT_DRAWS} draws)", _joint,
