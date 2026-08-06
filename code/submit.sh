@@ -26,6 +26,7 @@
 #BSUB -o logs/%J.out
 #BSUB -e logs/%J.err
 #BSUB -u ageab@dtu.dk
+#BSUB -env "all"
 
 set -euo pipefail
 
