@@ -1,0 +1,17 @@
+transits_baseline,1091.0
+transits_march,29
+transits_acute,67.5
+transits_retention_acute,0.0619
+transits_march_drop,-0.9762
+td3c_baseline,132.2
+td3c_acute,439.3
+td3c_multiple,3.32
+brent_baseline,68.74
+brent_acute,112.22
+spread_baseline,5.02
+spread_march,50.51
+spread_acute,28.58
+onset_date,2026-02-28
+coordinated_release_date,2026-03-11
+coordinated_release_note,IEA member countries announced a 400 million barrel emergency oil-stock release.
+import_retention_for_contrast,0.8342

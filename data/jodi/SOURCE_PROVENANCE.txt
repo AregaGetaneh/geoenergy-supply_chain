@@ -1,0 +1,28 @@
+JODI-Oil World Database
+Source: https://www.jodidata.org
+Downloaded: 17 August 2026
+
+This extract contains every crude oil observation from the files below,
+restricted to the six columns the analysis reads. ASSESSMENT_CODE is the
+quality flag JODI attaches to each observation, documented in the JODI-Oil
+item name guide as 1 assessed as comparable, 2 use with caution,
+3 not assessed, 4 under verification.
+
+fa12a096d21bde2e89da503b77e41ab8f7e7a56a2f00b586331994c5438562ff    11,656,353 bytes  primary_2020.csv
+5af388bfe0e5f0c443651875c4e6186482cdcbda487172b2898c303d21f36248    11,649,796 bytes  primary_2021.csv
+e0263b8a33248b154d6d3362de10a6bd7fe2a1f633e62359651c1ac474b86e68    11,649,999 bytes  primary_2022.csv
+34f170c90f39ec05850a8beee7aa196b83231fa5360662d02737deec0e75d26e    11,637,677 bytes  primary_2023.csv
+99ffe47ceee11220b16a98c2a66987881b760f1d88f1fe9caa8e62bb9282b6ff    11,603,543 bytes  primary_2024.csv
+4509a02d57ef0fff5d18eb9548713e2ae8f7c56638841e7ba9c5870fffbe0391    11,598,300 bytes  primary_2025.csv
+b31ef4a811400fa16a77fd8fb1561a14b9a22aba0597d7882cd542c20667ee84     3,964,296 bytes  primary_2026.csv
+a924bf08f16f31005e88a58deaa6ac4e713f5d88d94fe7ed615f437da9207fdd    26,641,965 bytes  secondary_2020.csv
+aebdb99e88841fe6b72354690a291f51daf1ab0b3e53c907d14fb75d1a498b9a    26,593,925 bytes  secondary_2021.csv
+c4d588151e533fa8c20d476c81ea7d0e18cec5ea062d86cb57a4dcf94d6cdfb2    26,573,808 bytes  secondary_2022.csv
+58a394d7a1a9276bef36533f6f1e43e642c749cb583afb9d1e226ecf27770cf8    26,556,073 bytes  secondary_2023.csv
+a6f6d90bb498b27d8b72ddcc79e482e18504084150d9cca719c0d0ccb435d280    26,450,440 bytes  secondary_2024.csv
+af84745eb1c9c0523464ec84960c5d0cb377c68a85aff3e77472aabe0d33de94    26,431,349 bytes  secondary_2025.csv
+6e176be8c75f4eb6a2f3d7046245f69d9e6d1f549083c8f42354788f9c364824     9,003,066 bytes  secondary_2026.csv
+
+Extract: 448,800 rows, 118 economies, 2020-01 to 2026-05
+Extract SHA-256: 4fcc513e2e216ea0fbedb1d6b1d6ad59e867bd7afd1e4211e5f9df67a3970a79
+Extract size: 1,671,852 bytes

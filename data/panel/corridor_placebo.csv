@@ -1,0 +1,7 @@
+episode,corridor,role,placebo_baseline_months,placebo_acute_months,placebo_baseline_monthly_mean,placebo_acute_monthly_mean,placebo_retention,episode_retention,ratio_to_placebo
+Hormuz 2026,Strait of Hormuz,affected,2025-01 2025-02,2025-04 2025-05,1195.0,1763.0,1.4753,0.0619,0.0419
+Russia 2022-23,Bosporus Strait,affected,2021-09 2021-10,2022-01 2022-02,668.5,732.0,1.095,0.9357,0.8545
+Russia 2022-23,Oresund Strait,affected,2021-09 2021-10,2022-01 2022-02,379.0,311.5,0.8219,1.02,1.241
+Red Sea 2023-24,Bab el-Mandeb Strait,affected,2022-09 2022-10,2023-01 2023-02,747.0,742.0,0.9933,0.4785,0.4817
+Red Sea 2023-24,Suez Canal,affected,2022-09 2022-10,2023-01 2023-02,693.5,737.0,1.0627,0.5749,0.541
+Red Sea 2023-24,Cape of Good Hope,reroute,2022-09 2022-10,2023-01 2023-02,284.0,253.5,0.8926,1.8604,2.0842

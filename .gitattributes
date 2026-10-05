@@ -1,0 +1,6 @@
+# Keep byte-exact content, so the SHA-256 values in data/DIGESTS.md stay valid.
+*.csv -text
+*.gz  -text
+*.pdf -text
+*.png -text
+*.txt -text

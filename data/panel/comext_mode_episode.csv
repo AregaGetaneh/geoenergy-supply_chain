@@ -1,0 +1,27 @@
+episode,reporter,in_comext,baseline_total_kg,acute_total_kg,baseline_sea_share,acute_sea_share,baseline_pipeline_share,acute_pipeline_share,unknown_share_max,sea_retention,note
+Hormuz 2026,CH,False,,,,,,,,,"not an EU reporter, absent from Comext"
+Hormuz 2026,CZ,True,1342051000.0,894476000.0,0.0,0.0,1.0,1.0,0.0,,
+Hormuz 2026,DE,True,9993786934.0,9800394646.0,0.5481,0.6012,0.4519,0.3988,0.0,1.0756,
+Hormuz 2026,GR,True,4524893488.0,3387076318.0,1.0,1.0,0.0,0.0,0.0,0.7485,
+Hormuz 2026,ID,False,,,,,,,,,"not an EU reporter, absent from Comext"
+Hormuz 2026,IE,True,515907585.0,427685263.0,0.9999,0.9999,0.0,0.0,0.0,0.829,
+Hormuz 2026,PL,True,3922602535.0,3355972843.0,1.0,1.0,0.0,0.0,0.0,0.8555,
+Russia 2022-23,BG,True,1355054010.0,1036005683.0,1.0,1.0,0.0,0.0,0.0,0.7645,
+Russia 2022-23,CH,False,,,,,,,,,"not an EU reporter, absent from Comext"
+Russia 2022-23,DE,True,11781958900.0,10355879136.0,0.5459,0.6132,0.4541,0.3868,0.0,0.9872,
+Russia 2022-23,ID,False,,,,,,,,,"not an EU reporter, absent from Comext"
+Russia 2022-23,IE,True,502495936.0,701418189.0,0.9998,0.9999,0.0,0.0,0.0002,1.3961,
+Russia 2022-23,LT,True,1692628486.0,1356003321.0,1.0,1.0,0.0,0.0,0.0,0.8011,
+Russia 2022-23,PL,True,4649757869.0,4887836770.0,0.6398,0.7648,0.3602,0.2352,0.0,1.2566,
+Russia 2022-23,RO,True,1595026467.0,1335874713.0,0.9998,0.9995,0.0,0.0,0.0,0.8373,
+Russia 2022-23,SK,True,1057080000.0,1066898000.0,0.0,0.0,1.0,1.0,0.0,,
+Russia 2022-23,TR,False,,,,,,,,,"not an EU reporter, absent from Comext"
+Red Sea 2023-24,AT,True,1283549000.0,1196732000.0,0.0,0.0,1.0,1.0,0.0,,
+Red Sea 2023-24,BG,True,1249228142.0,646848148.0,1.0,1.0,0.0,0.0,0.0,0.5178,
+Red Sea 2023-24,CZ,True,1384023001.0,1267839000.0,0.0,0.0,1.0,1.0,0.0,,
+Red Sea 2023-24,HU,True,640928612.0,1024938000.0,0.0,0.0,1.0,1.0,0.0,,
+Red Sea 2023-24,ID,False,,,,,,,,,"not an EU reporter, absent from Comext"
+Red Sea 2023-24,IT,True,11563556862.0,9903565144.0,1.0,1.0,0.0,0.0,0.0,0.8564,
+Red Sea 2023-24,NL,True,16267109252.0,16949010730.0,0.9095,0.9208,0.0003,0.0,0.0902,1.0548,
+Red Sea 2023-24,SK,True,1099183879.0,991411741.0,0.094,0.0366,0.906,0.9634,0.0,0.3507,
+Red Sea 2023-24,TR,False,,,,,,,,,"not an EU reporter, absent from Comext"

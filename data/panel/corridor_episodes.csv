@@ -1,0 +1,7 @@
+episode,corridor,portid,role,primary,baseline_months,acute_months,baseline_monthly_mean,acute_monthly_mean,baseline_daily_mean,acute_daily_mean,transit_retention,transit_retention_day_weighted,transit_change_pct
+Hormuz 2026,Strait of Hormuz,chokepoint6,affected,True,2026-01 2026-02,2026-04 2026-05,1091.0,67.5,36.983,2.213,0.0619,0.0598,-93.8
+Russia 2022-23,Bosporus Strait,chokepoint3,affected,True,2022-09 2022-10,2023-01 2023-02,731.0,684.0,23.967,23.186,0.9357,0.9674,-6.4
+Russia 2022-23,Oresund Strait,chokepoint10,affected,False,2022-09 2022-10,2023-01 2023-02,325.0,331.5,10.656,11.237,1.02,1.0546,2.0
+Red Sea 2023-24,Bab el-Mandeb Strait,chokepoint4,affected,True,2023-09 2023-10,2024-01 2024-02,813.0,389.0,26.656,13.186,0.4785,0.4947,-52.2
+Red Sea 2023-24,Suez Canal,chokepoint1,affected,False,2023-09 2023-10,2024-01 2024-02,764.5,439.5,25.066,14.898,0.5749,0.5944,-42.5
+Red Sea 2023-24,Cape of Good Hope,chokepoint7,reroute,False,2023-09 2023-10,2024-01 2024-02,286.5,533.0,9.393,18.068,1.8604,1.9234,86.0

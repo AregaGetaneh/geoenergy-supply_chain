@@ -1,0 +1,6 @@
+date,tanker_transits,monthly_change,monthly_pct_change,daily_mean,daily_min,daily_max,observed_days,series_scope,source_url,retrieval_date_utc
+2026-01,965,,,31.129,19,41,31,"PortWatch arrivals of ships, Tanker category; public series does not identify laden status.",https://data-download.imf.org/climatedata/portwatch-chokepoints-indicators.html?portid=chokepoint6,2026-09-21
+2026-02,1217,252,26.114,43.4643,19,69,28,"PortWatch arrivals of ships, Tanker category; public series does not identify laden status.",https://data-download.imf.org/climatedata/portwatch-chokepoints-indicators.html?portid=chokepoint6,2026-09-21
+2026-03,29,-1188,-97.617,0.9355,0,5,31,"PortWatch arrivals of ships, Tanker category; public series does not identify laden status.",https://data-download.imf.org/climatedata/portwatch-chokepoints-indicators.html?portid=chokepoint6,2026-09-21
+2026-04,95,66,227.586,3.1667,0,23,30,"PortWatch arrivals of ships, Tanker category; public series does not identify laden status.",https://data-download.imf.org/climatedata/portwatch-chokepoints-indicators.html?portid=chokepoint6,2026-09-21
+2026-05,40,-55,-57.895,1.2903,0,4,31,"PortWatch arrivals of ships, Tanker category; public series does not identify laden status.",https://data-download.imf.org/climatedata/portwatch-chokepoints-indicators.html?portid=chokepoint6,2026-09-21

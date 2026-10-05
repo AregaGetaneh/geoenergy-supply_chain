@@ -1,0 +1,97 @@
+country_iso2,status,class,months,n_valid,c_i,resid_pct
+AE,residual not evaluable,,,,,
+AL,residual not evaluable,,,,,
+AM,residual not evaluable,,,,,
+AO,residual not evaluable,,,,,
+AT,accounting panel,destination system,5.0,5.0,0.02579614938002444,2.579614938002444
+AU,closure above tolerance,,5.0,5.0,0.6338923821440311,63.38923821440312
+AZ,partial reporting,,2.0,2.0,0.0014007547218166032,0.14007547218166033
+BD,residual not evaluable,,,,,
+BE,accounting panel,destination system,5.0,5.0,0.006355572376397953,0.6355572376397951
+BG,accounting panel,destination system,5.0,5.0,0.0032567665333147152,0.32567665333147156
+BH,partial reporting,,4.0,4.0,0.013311884001630492,1.3311884001630494
+BM,residual not evaluable,,,,,
+BN,accounting panel,crude-exporting importer,5.0,5.0,0.018220570226574473,1.8220570226574473
+BY,residual not evaluable,,,,,
+CA,closure above tolerance,,5.0,5.0,0.07326223771428889,7.3262237714288885
+CH,accounting panel,destination system,5.0,5.0,0.03201056630193605,3.201056630193605
+CL,partial reporting,,4.0,4.0,0.13145456235990666,13.145456235990665
+CN,partial reporting,,2.0,2.0,2.4233777275035913e-06,0.00024233777275030002
+CY,physically invalid balance,,5.0,0.0,,
+CZ,accounting panel,destination system,5.0,5.0,0.005372773509128724,0.5372773509128723
+DE,accounting panel,destination system,5.0,5.0,0.01869781026459937,1.8697810264599368
+DK,accounting panel,crude-exporting importer,5.0,5.0,0.012429624041263822,1.242962404126382
+DZ,closure above tolerance,,5.0,5.0,0.05499604731146042,5.499604731146041
+EC,residual not evaluable,,,,,
+EE,physically invalid balance,,5.0,0.0,,
+EG,residual not evaluable,,,,,
+ES,accounting panel,destination system,5.0,5.0,0.010822979302237419,1.082297930223742
+FI,physically invalid balance,,5.0,4.0,0.021709771948995968,2.1709771948995966
+FR,closure above tolerance,,5.0,5.0,0.05289278466855927,5.289278466855928
+GA,residual not evaluable,,,,,
+GB,accounting panel,crude-exporting importer,5.0,5.0,0.005056985777328066,0.5056985777328065
+GE,residual not evaluable,,,,,
+GM,residual not evaluable,,,,,
+GQ,residual not evaluable,,,,,
+GR,accounting panel,destination system,5.0,5.0,0.002565102109788199,0.2565102109788199
+HK,residual not evaluable,,,,,
+HR,accounting panel,destination system,5.0,5.0,0.002460913664009512,0.2460913664009512
+HU,accounting panel,destination system,5.0,5.0,0.007144296445942178,0.7144296445942178
+ID,accounting panel,destination system,5.0,5.0,1.605625318338473e-05,0.0016056253183384668
+IE,accounting panel,destination system,5.0,5.0,0.017198218691299234,1.7198218691299239
+IN,residual not evaluable,,,,,
+IQ,residual not evaluable,,,,,
+IR,residual not evaluable,,,,,
+IS,physically invalid balance,,5.0,0.0,,
+IT,closure above tolerance,,5.0,5.0,0.0727366052305898,7.273660523058979
+JP,closure above tolerance,,5.0,5.0,0.1710318936257867,17.103189362578668
+KR,closure above tolerance,,5.0,5.0,0.05018611758516491,5.01861175851649
+KW,net exporter,,5.0,5.0,0.0002172217099939213,0.021722170999392103
+KZ,residual not evaluable,,,,,
+LT,partial reporting,,4.0,4.0,0.0009717124395686325,0.09717124395686323
+LU,physically invalid balance,,5.0,0.0,,
+LV,physically invalid balance,,5.0,0.0,,
+LY,residual not evaluable,,,,,
+MA,residual not evaluable,,,,,
+MD,residual not evaluable,,,,,
+MK,residual not evaluable,,,,,
+MM,residual not evaluable,,,,,
+MT,residual not evaluable,,,,,
+MU,residual not evaluable,,,,,
+MX,partial reporting,,4.0,4.0,0.07785735312803235,7.785735312803234
+MY,residual not evaluable,,,,,
+NE,residual not evaluable,,,,,
+NG,net exporter,,5.0,5.0,0.0006408455172156251,0.06408455172156248
+NL,accounting panel,destination system,5.0,5.0,0.008551799357774071,0.8551799357774073
+NO,closure above tolerance,,5.0,5.0,0.326226464869576,32.622646486957606
+NP,residual not evaluable,,,,,
+NZ,physically invalid balance,,5.0,4.0,1.0,100.0
+OM,residual not evaluable,,,,,
+PE,residual not evaluable,,,,,
+PG,residual not evaluable,,,,,
+PH,residual not evaluable,,,,,
+PL,accounting panel,destination system,5.0,5.0,0.007004259442074762,0.7004259442074762
+PT,accounting panel,destination system,5.0,5.0,0.005427481401722153,0.5427481401722154
+QA,residual not evaluable,,,,,
+RO,partial reporting,,2.0,2.0,0.09476817721301811,9.476817721301812
+RS,partial reporting,,4.0,4.0,0.038855186539548794,3.885518653954879
+RU,residual not evaluable,,,,,
+SA,net exporter,,5.0,5.0,0.0003259391251403612,0.03259391251403606
+SD,residual not evaluable,,,,,
+SE,accounting panel,destination system,5.0,5.0,0.004270163708853841,0.42701637088538397
+SG,residual not evaluable,,,,,
+SI,physically invalid balance,,5.0,0.0,,
+SK,accounting panel,destination system,5.0,5.0,0.019828376506515734,1.9828376506515735
+SY,residual not evaluable,,,,,
+SZ,residual not evaluable,,,,,
+TH,partial reporting,,4.0,4.0,0.12789935601778119,12.789935601778115
+TJ,residual not evaluable,,,,,
+TN,residual not evaluable,,,,,
+TR,accounting panel,destination system,5.0,5.0,0.007443715020559918,0.7443715020559918
+TW,residual not evaluable,,,,,
+UA,residual not evaluable,,,,,
+US,accounting panel,crude-exporting importer,5.0,5.0,0.04711620471900295,4.711620471900295
+VE,closure above tolerance,,5.0,5.0,1.0,100.0
+VN,residual not evaluable,,,,,
+YE,residual not evaluable,,,,,
+ZA,residual not evaluable,,,,,

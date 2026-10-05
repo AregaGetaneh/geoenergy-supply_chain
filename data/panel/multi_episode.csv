@@ -1,0 +1,4 @@
+episode,note,admitted,destinations,contracting,gap_positive,binomial_p,mean_import_retention,mean_availability_retention,mean_gap,shortfall_kbd,margin_inventory,margin_production,margin_export,gross_release_kbd,credited_kbd,released_share,released_share_interpretable
+Hormuz 2026,chokepoint transit disruption,27,19,7,7,0.0078,0.834,0.958,0.124,386.0,0.602,0.019,0.065,223.9,232.5,0.963,True
+Russia 2022-23,sanctions-driven origin switch,30,24,10,9,0.0107,0.849,0.9,0.052,691.5,0.313,0.036,-0.023,47.9,216.2,0.221,True
+Red Sea 2023-24,"routing disruption, voyages lengthened",32,23,9,7,0.0898,0.878,0.906,0.029,580.0,0.013,0.028,-0.008,22.5,7.6,2.946,False
